@@ -1,0 +1,40 @@
+# Digital Twin configuration
+
+digital_twin:
+  # Simulator
+  simulator:
+    capacity: 100  # Ah
+    nominal_voltage: 48  # V
+    initial_soc: 0.5
+    temperature: 25  # celsius
+    internal_resistance: 0.01  # ohms
+    num_trajectories: 1000
+    trajectory_length: 1000
+    noise_std: 0.01
+
+  # TimeGAN architecture
+  timegan:
+    dim_input: 4  # SoC, V, I, T
+    dim_embedding: 24
+    dim_hidden: 24
+    dim_latent: 12
+    batch_size: 32
+    seq_len: 128
+    learning_rate: 0.001
+    epochs: 50
+
+  # Physics constraints
+  physics:
+    enable_physics_loss: true
+    soc_weight: 1.0
+    voltage_weight: 0.5
+    smooth_weight: 0.1
+    constraint_penalty: 10.0
+    min_voltage: 40.0
+    max_voltage: 55.0
+    min_soc: 0.0
+    max_soc: 1.0
+
+  # Data
+  window_size: 128
+  normalization: "zscore"  # or "minmax"

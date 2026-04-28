@@ -1,0 +1,28 @@
+# Optimizer configuration
+
+optimizer:
+  # Objective
+  objective:
+    minimize_cost: true
+    cost_weights:
+      energy: 0.5
+      degradation: 0.3
+      peak_power: 0.2
+
+  # Constraints
+  constraints:
+    max_discharge_rate: 0.5  # C rate
+    max_charge_rate: 0.5
+    min_soc: 0.1
+    max_soc: 0.9
+    power_ramp_limit: 10  # kW
+
+  # Training
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 100
+  optimizer_algorithm: "adam"  # or "sgd"
+
+  # Model
+  hidden_layers: [64, 64]
+  dropout: 0.1

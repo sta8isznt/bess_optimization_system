@@ -1,0 +1,21 @@
+# Base configuration
+
+# Paths
+paths:
+  data_raw: "data/raw"
+  data_synthetic: "data/synthetic"
+  data_processed: "data/processed"
+  models: "models"
+  logs: "logs"
+  checkpoints: "checkpoints"
+
+# Random seed
+seed: 42
+
+# Device
+device: "cuda"  # or "cpu"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
