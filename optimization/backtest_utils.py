@@ -119,6 +119,8 @@ def summarize(
         "idle_intervals": int((schedule["operation"] == "idle").sum()),
         "min_soc_pct": float(schedule["soc_pct"].min()),
         "max_soc_pct": float(schedule["soc_pct"].max()),
+        "final_soc_pct": float(schedule["soc_pct"].iloc[-1]),
+        "total_throughput_mwh": float(buy_energy + sell_energy),
     }
 
 
@@ -140,13 +142,15 @@ def validate_schedule(schedule: pd.DataFrame, summary: dict, test_params: dict) 
     if schedule["soc_mwh"].gt(soc_max + tolerance).any():
         errors.append("SoC exceeds configured maximum")
 
-    terminal_soc = schedule["soc_mwh"].iloc[-1]
+    terminal_mode = str(test_params.get("terminal_soc_mode", "equal_initial")).strip().lower()
     initial_soc = test_params["soc_init"] * test_params["e_max"]
-    if abs(terminal_soc - initial_soc) > tolerance:
-        errors.append(
-            f"terminal SoC {terminal_soc:.6f} MWh does not match initial "
-            f"{initial_soc:.6f} MWh"
-        )
+    if terminal_mode != "free":
+        terminal_soc = schedule["soc_mwh"].iloc[-1]
+        if abs(terminal_soc - initial_soc) > tolerance:
+            errors.append(
+                f"terminal SoC {terminal_soc:.6f} MWh does not match initial "
+                f"{initial_soc:.6f} MWh"
+            )
 
     previous_soc = np.r_[initial_soc, schedule["soc_mwh"].to_numpy()[:-1]]
     expected_soc = previous_soc + (
