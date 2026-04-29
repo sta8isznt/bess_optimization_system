@@ -46,3 +46,16 @@
 * Dashboard (DAM vs Power of BESS, SoC Trajectory, Total profit vs Dedagration cost)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
