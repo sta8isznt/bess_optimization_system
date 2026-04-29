@@ -52,10 +52,27 @@ The scheduling problem is mathematically formulated as a Mixed-Integer Linear Pr
 > * The solver matches the decision variable `P_sell[t]` to predefined energy breakpoints (derived from the Phase 1 LUT).
 > * Because the degradation cost curve is mathematically convex, the solver naturally selects two adjacent interpolation weights (lambdas) to calculate the exact dynamic_deg_cost in euros, maintaining strict MILP linearity and lightning-fast execution times.
 
-* Cycle Continuity
-
->  To ensure operational readiness for subsequent days and to facilitate continuous multi-day backtesting, a Cycle Continuity Constraint is assumed. This dictates that the State of Charge (SoC) at the end of the 24-hour optimization horizon must equal its initial value (SoC_96​	=SoC_0). This prevents the model from unrealistic energy depletion ('dumping') for short-term profit and ensures the battery remains in a neutral state for the next day's market signals
 
 ### Objective Function 
 
 `Maximize ∑ [ (Price[t] * (P_sell[t] - P_buy[t]) * dt) - dynamic_deg_cost[t] ]`
+
+### Αssumptions:
+
+* Cycle Continuity
+
+>  To ensure operational readiness for subsequent days and to facilitate continuous multi-day backtesting, a Cycle Continuity Constraint is assumed. This dictates that the State of Charge (SoC) at the end of the 24-hour optimization horizon must equal its initial value (SoC_96​	=SoC_0). This prevents the model from unrealistic energy depletion ('dumping') for short-term profit and ensures the battery remains in a neutral state for the next day's market signals
+
+* Modular Architecture & Linear Scale-Up
+
+> * We designed the optimization engine using a Modular Scaling (Per-Unit) architecture. The heavy MILP mathematical problem is solved exclusively for a "Base Module" of 1 MW / 2 MWh (representing a standard physical BESS container).
+
+> * For the baseline MVP, we assume the BESS acts as a "Price-Taker". This means the optimal dispatch schedule (when to buy/sell) for a single container is mathematically identical to the optimal schedule of the entire fleet.
+
+* Market Cannibalization & Bidding Strategy Evolution
+
+> * While the current MILP engine utilizes the "Price-Taker" assumption for computational speed, our strategic framework actively recognizes the **Market Cannibalization Effect**.
+
+> * Injecting massive volumes of energy  into the Greek Day-Ahead Market (DAM) will inevitably alter the market equilibrium :
+
+> > * Over time, as more BESS capacity enters the Greek grid, this self-cannibalization will compress the DAM price spreads.
