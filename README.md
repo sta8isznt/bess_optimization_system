@@ -57,3 +57,16 @@ This produces a LUT in `data/processed/` with columns:
 * Dashboard (DAM vs Power of BESS, SoC Trajectory, Total profit vs Dedagration cost)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
