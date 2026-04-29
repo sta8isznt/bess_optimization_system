@@ -46,9 +46,9 @@ from optimization.engine import bess_order
 # USER SETTINGS
 # =============================================================================
 
-RUN_MODE = "annual"  # Choose "daily" or "annual".
+RUN_MODE = "daily"  # Choose "daily" or "annual".
 
-TARGET_DATE = "2025-09-01"  # Used when RUN_MODE = "daily".
+TARGET_DATE = "2025-10-01"  # Used when RUN_MODE = "daily".
 YEAR = 2025  # Used when RUN_MODE = "annual".
 
 DEGRADATION_SOURCE = "lut"  # Choose "lut" or "dummy".
@@ -59,6 +59,10 @@ DEGRADATION_LUT_CSV = DEFAULT_DEGRADATION_LUT_PATH
 
 SOLVER_MSG = False
 PROGRESS_EVERY = 25  # Used only for annual runs. Set 0 to disable progress prints.
+
+INSTALLED_CAPACITY_MW = 50.0
+BASE_MODULE_MW = float(BASE_PARAMS["p_max"])
+SCALE_FACTOR = INSTALLED_CAPACITY_MW / BASE_MODULE_MW
 
 DAILY_OUTPUT_DIR = BASE_DIR / "daily_outputs"
 ANNUAL_OUTPUT_DIR = BASE_DIR / "annual_outputs"
@@ -86,12 +90,70 @@ def load_degradation_curve(test_params: dict) -> tuple[list[float], list[float],
     raise ValueError('DEGRADATION_SOURCE must be "lut" or "dummy".')
 
 
+def validate_scale_settings(test_params: dict) -> float:
+    if BASE_MODULE_MW <= 0:
+        raise ValueError("BASE_MODULE_MW must be positive for park scale-up.")
+    if INSTALLED_CAPACITY_MW <= 0:
+        raise ValueError("INSTALLED_CAPACITY_MW must be positive for park scale-up.")
+
+    configured_base_mw = float(test_params["p_max"])
+    if abs(configured_base_mw - BASE_MODULE_MW) > 1e-9:
+        raise ValueError(
+            "BASE_MODULE_MW must match test_params['p_max'] so post-processing "
+            "scale-up stays aligned with the solved base module."
+        )
+    return float(SCALE_FACTOR)
+
+
+def add_park_scale_up_columns(schedule: pd.DataFrame, scale_factor: float) -> pd.DataFrame:
+    scaled = schedule.copy()
+    columns_to_scale = {
+        "p_buy_mw": "park_p_buy_mw",
+        "p_sell_mw": "park_p_sell_mw",
+        "net_export_mw": "park_net_export_mw",
+        "buy_energy_mwh": "park_buy_energy_mwh",
+        "sell_energy_mwh": "park_sell_energy_mwh",
+        "soc_mwh": "park_soc_mwh",
+        "gross_revenue_eur": "park_gross_revenue_eur",
+        "gross_purchase_eur": "park_gross_purchase_eur",
+        "degradation_cost_eur": "park_degradation_cost_eur",
+        "interval_profit_eur": "park_interval_profit_eur",
+    }
+    for source_col, target_col in columns_to_scale.items():
+        scaled[target_col] = scaled[source_col] * scale_factor
+    return scaled
+
+
+def add_park_scale_up_summary(summary: dict, test_params: dict, scale_factor: float) -> dict:
+    out = dict(summary)
+    out["installed_capacity_mw"] = float(INSTALLED_CAPACITY_MW)
+    out["installed_energy_capacity_mwh"] = float(test_params["e_max"] * scale_factor)
+    out["scale_factor"] = float(scale_factor)
+    out["park_net_profit_eur"] = float(out["net_profit_eur"] * scale_factor)
+    out["park_gross_revenue_eur"] = float(out["gross_revenue_eur"] * scale_factor)
+    out["park_gross_purchase_eur"] = float(out["gross_purchase_eur"] * scale_factor)
+    out["park_degradation_cost_eur"] = float(out["degradation_cost_eur"] * scale_factor)
+    out["park_buy_energy_mwh"] = float(out["buy_energy_mwh"] * scale_factor)
+    out["park_sell_energy_mwh"] = float(out["sell_energy_mwh"] * scale_factor)
+    return out
+
+
+def add_park_scale_up_metadata(stats: pd.DataFrame, test_params: dict) -> pd.DataFrame:
+    scale_factor = validate_scale_settings(test_params)
+    stats = stats.copy()
+    stats["installed_capacity_mw"] = float(INSTALLED_CAPACITY_MW)
+    stats["installed_energy_capacity_mwh"] = float(test_params["e_max"] * scale_factor)
+    stats["scale_factor"] = float(scale_factor)
+    return stats
+
+
 def optimize_prices(
     prices: pd.Series,
     test_params: dict,
     energy_points: list[float],
     cost_points: list[float],
 ) -> tuple[pd.DataFrame, dict]:
+    scale_factor = validate_scale_settings(test_params)
     problem, p_buy, p_sell, soc, degradation_cost = bess_order(
         prices=prices.to_numpy(dtype=float),
         battery_params=test_params,
@@ -116,6 +178,8 @@ def optimize_prices(
     summary["price_max_eur_mwh"] = float(prices.max())
     summary["price_mean_eur_mwh"] = float(prices.mean())
     validate_schedule(schedule, summary, test_params)
+    schedule = add_park_scale_up_columns(schedule, scale_factor)
+    summary = add_park_scale_up_summary(summary, test_params, scale_factor)
     return schedule, summary
 
 
@@ -261,26 +325,40 @@ def add_unit_metrics(stats: pd.DataFrame, test_params: dict) -> pd.DataFrame:
 def build_monthly_stats(schedule: pd.DataFrame, test_params: dict) -> pd.DataFrame:
     work = schedule.copy()
     work["month"] = work["timestamp"].dt.to_period("M").astype(str)
+    aggregations = {
+        "intervals": ("timestamp", "count"),
+        "gross_revenue_eur": ("gross_revenue_eur", "sum"),
+        "gross_purchase_eur": ("gross_purchase_eur", "sum"),
+        "degradation_cost_eur": ("degradation_cost_eur", "sum"),
+        "net_profit_eur": ("interval_profit_eur", "sum"),
+        "buy_energy_mwh": ("buy_energy_mwh", "sum"),
+        "sell_energy_mwh": ("sell_energy_mwh", "sum"),
+        "buy_intervals": ("operation", lambda values: int((values == "buy").sum())),
+        "sell_intervals": ("operation", lambda values: int((values == "sell").sum())),
+        "idle_intervals": ("operation", lambda values: int((values == "idle").sum())),
+        "price_min_eur_mwh": ("price_eur_mwh", "min"),
+        "price_max_eur_mwh": ("price_eur_mwh", "max"),
+        "price_mean_eur_mwh": ("price_eur_mwh", "mean"),
+    }
+    park_aggregations = {
+        "park_gross_revenue_eur": ("park_gross_revenue_eur", "sum"),
+        "park_gross_purchase_eur": ("park_gross_purchase_eur", "sum"),
+        "park_degradation_cost_eur": ("park_degradation_cost_eur", "sum"),
+        "park_net_profit_eur": ("park_interval_profit_eur", "sum"),
+        "park_buy_energy_mwh": ("park_buy_energy_mwh", "sum"),
+        "park_sell_energy_mwh": ("park_sell_energy_mwh", "sum"),
+    }
+    for output_col, aggregation in park_aggregations.items():
+        if aggregation[0] in work.columns:
+            aggregations[output_col] = aggregation
+
     monthly = (
         work.groupby("month")
-        .agg(
-            intervals=("timestamp", "count"),
-            gross_revenue_eur=("gross_revenue_eur", "sum"),
-            gross_purchase_eur=("gross_purchase_eur", "sum"),
-            degradation_cost_eur=("degradation_cost_eur", "sum"),
-            net_profit_eur=("interval_profit_eur", "sum"),
-            buy_energy_mwh=("buy_energy_mwh", "sum"),
-            sell_energy_mwh=("sell_energy_mwh", "sum"),
-            buy_intervals=("operation", lambda values: int((values == "buy").sum())),
-            sell_intervals=("operation", lambda values: int((values == "sell").sum())),
-            idle_intervals=("operation", lambda values: int((values == "idle").sum())),
-            price_min_eur_mwh=("price_eur_mwh", "min"),
-            price_max_eur_mwh=("price_eur_mwh", "max"),
-            price_mean_eur_mwh=("price_eur_mwh", "mean"),
-        )
+        .agg(**aggregations)
         .reset_index()
     )
-    return add_unit_metrics(monthly, test_params)
+    monthly = add_unit_metrics(monthly, test_params)
+    return add_park_scale_up_metadata(monthly, test_params)
 
 
 def build_annual_summary(
@@ -296,7 +374,7 @@ def build_annual_summary(
     buy_energy = float(schedule["buy_energy_mwh"].sum())
     sell_energy = float(schedule["sell_energy_mwh"].sum())
 
-    return {
+    summary = {
         "year": YEAR,
         "days": int(daily_stats.shape[0]),
         "intervals": int(schedule.shape[0]),
@@ -326,6 +404,11 @@ def build_annual_summary(
         "battery_capacity_mwh": float(test_params["e_max"]),
         "degradation_cost_source": degradation_source,
     }
+    return add_park_scale_up_summary(
+        summary,
+        test_params,
+        validate_scale_settings(test_params),
+    )
 
 
 def write_annual_report(
@@ -339,12 +422,20 @@ def write_annual_report(
         f"# Annual Battery Optimization Backtest {summary['year']}",
         "",
         "## Key Metrics",
-        f"- Net profit: {summary['net_profit_eur']:.2f} EUR",
-        f"- Gross revenue: {summary['gross_revenue_eur']:.2f} EUR",
-        f"- Gross purchase cost: {summary['gross_purchase_eur']:.2f} EUR",
-        f"- Degradation cost: {summary['degradation_cost_eur']:.2f} EUR",
-        f"- Sold energy: {summary['sell_energy_mwh']:.3f} MWh",
-        f"- Bought energy: {summary['buy_energy_mwh']:.3f} MWh",
+        (
+            "- Installed park: "
+            f"{summary['installed_capacity_mw']:.3f} MW / "
+            f"{summary['installed_energy_capacity_mwh']:.3f} MWh "
+            f"(scale factor {summary['scale_factor']:.3f})"
+        ),
+        f"- Park net profit: {summary['park_net_profit_eur']:.2f} EUR",
+        f"- Park gross revenue: {summary['park_gross_revenue_eur']:.2f} EUR",
+        f"- Park gross purchase cost: {summary['park_gross_purchase_eur']:.2f} EUR",
+        f"- Park degradation cost: {summary['park_degradation_cost_eur']:.2f} EUR",
+        f"- Park sold energy: {summary['park_sell_energy_mwh']:.3f} MWh",
+        f"- Park bought energy: {summary['park_buy_energy_mwh']:.3f} MWh",
+        f"- Base-module net profit: {summary['net_profit_eur']:.2f} EUR",
+        f"- Base-module sold energy: {summary['sell_energy_mwh']:.3f} MWh",
         (
             "- Gross revenue per MWh sold: "
             f"{summary['gross_revenue_eur_per_mwh_sold']:.2f} EUR/MWh"
@@ -415,7 +506,14 @@ def run_daily_optimization() -> None:
     print(f"Date: {target_day}")
     print(f"Degradation cost source: {degradation_source}")
     print(f"Status: {summary['solver_status']}")
-    print(f"Net profit: {summary['net_profit_eur']:.2f} EUR")
+    print(
+        "Installed park: "
+        f"{summary['installed_capacity_mw']:.3f} MW / "
+        f"{summary['installed_energy_capacity_mwh']:.3f} MWh "
+        f"(scale factor {summary['scale_factor']:.3f})"
+    )
+    print(f"Base-module net profit: {summary['net_profit_eur']:.2f} EUR")
+    print(f"Park net profit: {summary['park_net_profit_eur']:.2f} EUR")
     print(f"Schedule CSV: {schedule_path}")
     print(f"Visual output: {plot_path}")
     print(f"Report: {report_path}")
@@ -477,7 +575,14 @@ def run_annual_optimization() -> None:
     print(f"Year: {YEAR}")
     print(f"Days optimized: {annual_summary['days']}")
     print(f"Degradation cost source: {annual_summary['degradation_cost_source']}")
-    print(f"Net profit: {annual_summary['net_profit_eur']:.2f} EUR")
+    print(
+        "Installed park: "
+        f"{annual_summary['installed_capacity_mw']:.3f} MW / "
+        f"{annual_summary['installed_energy_capacity_mwh']:.3f} MWh "
+        f"(scale factor {annual_summary['scale_factor']:.3f})"
+    )
+    print(f"Base-module net profit: {annual_summary['net_profit_eur']:.2f} EUR")
+    print(f"Park net profit: {annual_summary['park_net_profit_eur']:.2f} EUR")
     print(
         "Gross revenue per MWh sold: "
         f"{annual_summary['gross_revenue_eur_per_mwh_sold']:.2f} EUR/MWh"
