@@ -1,4 +1,9 @@
-"""Battery digital twin physical layer using PyBaMM (SPM + thermal + degradation)."""
+"""
+Battery digital twin physical layer using PyBaMM (SPM + thermal + degradation).
+
+This module defines the physical layer of the digital twin, which simulates battery degradation under different DoD and temperature conditions using PyBaMM.
+
+"""
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple, Union
@@ -21,6 +26,12 @@ class SimulationConfig:
     initial_internal_resistance_ohm: float = 0.01
     sei_resistance_coeff: float = 5.0e4
     soh_weights: Tuple[float, float, float] = (0.5, 0.3, 0.2)
+    energy_max_mwh: float = 2.0
+    power_max_mw: float = 1.0
+    soc_min: float = 0.1
+    soc_max: float = 0.9
+    eta_charge: float = 0.92
+    eta_discharge: float = 0.92
 
 
 def _build_model() -> pybamm.BaseModel:
@@ -53,6 +64,36 @@ def _energy_throughput_mwh(current_a: float, voltage_v: float, minutes: float) -
     hours = minutes / 60.0
     power_kw = (current_a * voltage_v) / 1000.0
     return power_kw * hours / 1000.0
+
+
+def _energy_required_mwh(dod: float, cfg: SimulationConfig) -> float:
+    """Compute required energy for the DoD within the usable SoC window."""
+    usable = max(cfg.soc_max - cfg.soc_min, 1e-6)
+    if dod > usable:
+        return np.inf
+    return dod * cfg.energy_max_mwh
+
+
+def validate_operating_point(dod: float, temp_c: float, cfg: SimulationConfig) -> Tuple[bool, str]:
+    """Validate constraints for per-cell degradation simulation.
+
+    - DoD must be within usable SoC window
+    - Power must respect P_max
+    - Energy throughput must respect E_max
+    """
+    if dod <= 0 or dod > (cfg.soc_max - cfg.soc_min):
+        return False, "DoD out of SoC limits"
+
+    current_a = _current_for_dod(cfg.capacity_ah, dod, cfg.profile_minutes)
+    power_mw = (current_a * cfg.voltage_nominal) / 1e6
+    if power_mw > cfg.power_max_mw:
+        return False, "Power exceeds P_max"
+
+    energy_required = _energy_required_mwh(dod, cfg)
+    if energy_required > cfg.energy_max_mwh:
+        return False, "Energy exceeds E_max"
+
+    return True, ""
 
 
 def _get_variable(solution: pybamm.Solution, names: List[str]) -> Optional[np.ndarray]:
@@ -281,6 +322,9 @@ def run_lut_grid(dod_values: Iterable[float], temp_values_c: Iterable[float], cf
     for dod in dod_values:
         for temp_c in temp_values_c:
             try:
+                valid, reason = validate_operating_point(dod, temp_c, cfg)
+                if not valid:
+                    continue
                 soh_start, soh_end, soh_drop, energy_mwh, details = simulate_profile(
                     dod, temp_c, cfg, return_details=True
                 )
