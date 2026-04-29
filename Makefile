@@ -1,47 +1,22 @@
-.PHONY: help install test lint format run-digital-twin run-optimizer run-dashboard clean
-
-help:
-	@echo "Available commands:"
-	@echo "  make install              - Install dependencies"
-	@echo "  make test                 - Run unit tests"
-	@echo "  make lint                 - Run linting checks"
-	@echo "  make format               - Format code with black"
-	@echo "  make generate-data        - Generate synthetic data"
-	@echo "  make train-digital-twin   - Train digital twin"
-	@echo "  make train-optimizer      - Train optimizer"
-	@echo "  make dashboard            - Launch dashboard"
-	@echo "  make full-pipeline        - Run full pipeline"
-	@echo "  make clean                - Clean cache and outputs"
+.PHONY: install lint format dummy-backtest annual-backtest clean
 
 install:
-	pip install -r requirements.txt
-
-test:
-	pytest tests/ -v
+	pip install -e ".[dev]"
 
 lint:
-	ruff check src/ tests/ scripts/
+	ruff check src scripts optimization
 
 format:
-	black src/ tests/ scripts/
+	black src scripts optimization
 
-generate-data:
-	python scripts/generate_data.py --num-trajectories 100
+dummy-backtest:
+	python optimization/run_dummy_optimization_test.py
 
-train-digital-twin:
-	python scripts/train_digital_twin.py
-
-train-optimizer:
-	python scripts/train_optimizer.py
-
-dashboard:
-	python scripts/run_dashboard.py
-
-full-pipeline: generate-data train-digital-twin train-optimizer
-	@echo "Full pipeline complete!"
+annual-backtest:
+	python optimization/run_annual_2025_backtest.py
 
 clean:
+	rm -rf data/produced_data optimization/dummy_outputs optimization/annual_outputs
+	rm -rf .pytest_cache .coverage htmlcov logs
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-	rm -rf .pytest_cache .coverage htmlcov
-	rm -rf logs/*

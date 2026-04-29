@@ -1,72 +1,44 @@
-# Energy Optimization System
+# Battery Optimization in the Greek Electricity Market
 
-## Steps:
+Python toolkit for battery energy storage optimization, degradation-cost modeling,
+and simple backtesting on 15-minute day-ahead market prices.
 
-### PHASE 1: HANDLING DATA SCARCIRY 
+## Repository Layout
 
-* Ανάλυση του Oxford Battery Degradation Dataset
+- `src/`: battery digital-twin, data-processing, and utility code.
+- `optimization/`: MILP optimizer, backtest runners, price signals, and LUT input.
+- `scripts/`: command-line entry points for supporting data/LUT generation.
+- `data/oxford/`: Oxford battery dataset input files used by the degradation pipeline.
 
-> * Ανάγνωση και καθαρισμός (μέσω Python/Pandas) των αρχείων CSV του dataset της Οξφόρδης. Υπολογισμός στατιστικών συσχετίσεων μεταξύ των προφίλ εμπορίας (arbitrage) και της πτώσης της χωρητικότητας (capacity fade) ανά κύκλο.
+Generated outputs are intentionally not tracked. Recreate them by running the
+scripts, and keep the GitHub repository focused on source and stable input data.
 
-> * Έξοδος (Output): Εξαγόμενα χαρακτηριστικά (Features): Βάθος Εκφόρτισης (DoD), C-rate, και η αντίστοιχη πτώση του State of Health (SOH).
-
-* Προσομοίωση Φυσικού Μοντέλου (PyBaMM - SPM)
-
-> * Στήσιμο ενός Single Particle Model (SPM).
-
-> * Είσοδος : Τα χαρακτηριστικά του Βήματος 1 + Τεχνικές προδιαγραφές μπαταρίας της Metlen.
-
-> * Έξοδος : Ένα ψηφιακό μοντέλο ικανό να υπολογίσει τη φυσική καταπόνηση για οποιοδήποτε μελλοντικό προφίλ φόρτισης/εκφόρτισης του δώσουμε.
-
-* Δημιουργία Look-Up Table (LUT) Κόστους Φθοράς:
-
-Τρέχουμε το PyBaMM (Βήμα 2) offline για χιλιάδες πιθανά σενάρια Βάθους Εκφόρτισης (DoD). Μεταφράζουμε τη φυσική φθορά σε ευρώ, διαιρώντας την απώλεια ζωής με το CAPEX της μπαταρίας. Αποθηκεύουμε τα αποτελέσματα σε έναν πίνακα (LUT).
-
-> * Είσοδος: Τα αποτελέσματα προσομοίωσης του PyBaMM + Κόστος αντικατάστασης μπαταρίας (€/MW).
-
-> * Έξοδος: Ένας πίνακας (DoD, Θερμοκρασία) -> Marginal Degradation Cost (€/MWh).
-
-#### PyBaMM LUT Generation (Digital Twin Physical Layer)
-
-Use the physical layer script to run SPM + thermal + degradation simulations and create a LUT:
+## Setup
 
 ```bash
-python scripts/generate_lut.py --dod-range 0.1,1.0,0.1 --temp-range 10,45,5 --output lut_dod_temp.csv
+python -m venv .venv
+source .venv/bin/activate
+make install
 ```
 
-This produces a LUT in `data/processed/` with columns:
-`dod`, `temperature_c`, `soh_start`, `soh_end`, `soh_drop`, `energy_mwh`, `v_deg_eur_per_mwh`.
+## Common Commands
 
+```bash
+make dummy-backtest
+make annual-backtest
+make clean
+```
 
-### PHASE 2: OPTIMIZATION
+## Generated Outputs
 
-* Ingestion Δεδομένων Αγοράς (HEnEx DAM) -> παραγωγή `price_signals_15m.csv`
+These paths are local artefacts and are ignored by git:
 
-* Διατύπωση Προβλήματος MILP (με εισόδους το `price_signals_15m.csv` και τις εντολές `B`,`S`,`H`)
+- `data/produced_data/`
+- `optimization/dummy_outputs/`
+- `optimization/annual_outputs/`
+- `optimization/Results_*/`
 
-* Γραμμικοποίηση της Φθοράς με SOS2 vars:  MNLIP -> MILP!!!
+The tracked optimizer inputs are:
 
-* Ενσωμάτωση Τεχνικών Περιορισμών -> περιορισμό διάρκειας συστήματος (π.χ. 2 ώρες max σε πλήρη ισχύ) και τα όρια υγείας (SoC{min,max})
-
-> * Είσοδος: Οι ρυθμιστικοί κανόνες της αγοράς και του ΑΔΜΗΕ.
-
-### PHASE 3: TEST & DELIVERABLE
-
-* Backtesting και Υπολογισμός Εμπορικών Δεικτών (IRR)
-
-* Dashboard (DAM vs Power of BESS, SoC Trajectory, Total profit vs Dedagration cost)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- `optimization/price_signals_15m.csv`
+- `optimization/Reduced_LUT_Final.csv`
