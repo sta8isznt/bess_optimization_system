@@ -1,8 +1,8 @@
-# BESS Market-Realistic Pipeline: Physics-Aware Dispatch, Degradation LUT, and PyBaMM Integration
+# BESS Market-Realistic Pipeline
 
 ## 1. Project purpose
 
-This repository contains a **market-realistic Battery Energy Storage System (BESS) simulation pipeline** for a default **2 MWh / 1 MW lithium-ion battery** operating on 15-minute market intervals.
+This repository contains a Battery Energy Storage System (BESS) simulation pipeline for a default **2 MWh / 1 MW lithium-ion battery** operating on 15-minute market intervals.
 
 The script does **not** directly solve the full electrochemical equations of a lithium-ion cell. Instead, it provides a fast **market and financial simulation layer** with simplified battery-physics constraints:
 
@@ -33,7 +33,12 @@ bess_full_market_realistic_pipeline.py
 dispatch, SoC, SoH, degradation cost, net profit, report
 ```
 
-The main idea is to keep PyBaMM as an **offline physics engine** and use the resulting degradation surface as a fast lookup table inside the market simulator.
+PyBaMM is intended to run offline. Its outputs are converted into a degradation lookup table that can be evaluated quickly inside the market simulator.
+
+
+## Scope
+
+The repository currently implements a dispatch-level simulation and financial evaluation layer. It does not solve electrochemical partial differential equations during market simulation. High-fidelity electrochemical modelling should be performed offline using PyBaMM, with the resulting degradation surface exported as a lookup table consumed by this script.
 
 ---
 
@@ -214,7 +219,7 @@ For the default battery:
 DoD_step_max = 0.5C × 0.25 h = 0.125 = 12.5%
 ```
 
-This is a key market-realistic constraint. A 2 MWh / 1 MW battery cannot move 25% of its energy capacity in one 15-minute interval without exceeding its 0.5C physical power limit.
+This is the main physical consistency constraint used by the dispatch layer. A 2 MWh / 1 MW battery cannot move 25% of its energy capacity in one 15-minute interval without exceeding its 0.5C physical power limit.
 
 ---
 
@@ -817,7 +822,7 @@ The script writes:
 
 ## 18. Current limitations
 
-The current script is a strong market-realistic simulation prototype, but it has several limitations:
+The current script is a simulation prototype with the following limitations:
 
 1. **Dispatch is heuristic**, not a true optimization problem.
    - Current logic uses price quantiles.
@@ -828,7 +833,7 @@ The current script is a strong market-realistic simulation prototype, but it has
    - Future version should use PyBaMM thermal outputs or a calibrated pack-level thermal model.
 
 3. **Degradation surface is semi-empirical unless an external LUT exists**.
-   - The fallback cost function is reasonable for demonstration.
+   - The fallback cost function is a placeholder when no calibrated LUT is available.
    - A production version should use PyBaMM + lab-calibrated degradation data.
 
 4. **Battery pack aggregation is simplified**.
@@ -918,15 +923,15 @@ feasible dispatch share
 
 ---
 
-## 20. Pitch explanation
+## 20. Technical summary
 
-A concise project explanation:
+This repository implements a dispatch-level BESS simulation layer that combines market prices, operating constraints, simplified physics proxies, degradation-cost lookup tables, and financial accounting. The script is designed to consume degradation surfaces generated offline from PyBaMM simulations and laboratory data.
 
-> This project connects electrochemical battery modelling with market dispatch. PyBaMM and lab data are used offline to build a physically grounded degradation-cost surface. The market simulator then uses this degradation LUT to decide whether a battery should charge, discharge, or remain idle under realistic BESS constraints. The result is not only a profit estimate, but a SoH-aware dispatch evaluation that accounts for C-rate, DoD, temperature, efficiency losses, and replacement-cost-based degradation.
+The current implementation should be interpreted as a market-realistic simulation prototype, not as a full electrochemical model and not yet as a mathematical dispatch optimizer.
 
 ---
 
-## 21. Key references
+## 21. References
 
 ### PyBaMM documentation and software
 
@@ -970,22 +975,22 @@ A concise project explanation:
 
 ---
 
-## 22. Final interpretation
+## 22. Interpretation
 
 The current file is best described as:
 
 ```text
-A fast BESS market-realistic simulation layer with simplified physics constraints,
-designed to consume a PyBaMM/lab-derived degradation LUT.
+A dispatch-level BESS market simulation layer with simplified physics constraints,
+designed to consume a PyBaMM/lab-derived degradation lookup table.
 ```
 
-It is not yet the full electrochemical layer. The correct next engineering step is to build:
+The electrochemical component should be implemented separately as:
 
 ```text
 PyBaMM degradation LUT builder + Oxford validation notebook
 ```
 
-Then the system becomes:
+The complete system then consists of:
 
 ```text
 physics-calibrated degradation model
