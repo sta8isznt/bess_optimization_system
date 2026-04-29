@@ -1,60 +1,48 @@
-# BESS Digital Twin + Optimizer
+# Energy Optimization System
 
-A battery energy storage system digital twin with physics-constrained TimeGAN and operational optimizer.
+## Steps:
 
-## Structure
+### PHASE 1: HANDLING DATA SCARCIRY 
 
-```
-bess-digital-twin/
-├── configs/            # Configuration files
-├── data/               # Raw, synthetic, processed data
-├── models/             # Saved model checkpoints
-├── src/bess_twin/      # Core library
-│   ├── digital_twin/   # TimeGAN + physics simulator
-│   ├── optimizer/      # Optimization module
-│   ├── dashboard/      # Visualization
-│   └── utils/          # Utilities
-├── scripts/            # Entry point scripts
-├── dashboards/         # Streamlit app
-├── tests/              # Unit tests
-└── notebooks/          # Exploration notebooks
-```
+* Ανάλυση του Oxford Battery Degradation Dataset
 
-## Quick Start
+> * Ανάγνωση και καθαρισμός (μέσω Python/Pandas) των αρχείων CSV του dataset της Οξφόρδης. Υπολογισμός στατιστικών συσχετίσεων μεταξύ των προφίλ εμπορίας (arbitrage) και της πτώσης της χωρητικότητας (capacity fade) ανά κύκλο.
 
-1. Generate synthetic data
-   ```bash
-   python scripts/generate_data.py
-   ```
+> * Έξοδος (Output): Εξαγόμενα χαρακτηριστικά (Features): Βάθος Εκφόρτισης (DoD), C-rate, και η αντίστοιχη πτώση του State of Health (SOH).
 
-2. Train digital twin
-   ```bash
-   python scripts/train_digital_twin.py
-   ```
+* Προσομοίωση Φυσικού Μοντέλου (PyBaMM - SPM)
 
-3. Train optimizer
-   ```bash
-   python scripts/train_optimizer.py
-   ```
+> * Στήσιμο ενός Single Particle Model (SPM).
 
-4. View dashboard
-   ```bash
-   streamlit run dashboards/streamlit_app.py
-   ```
+> * Είσοδος : Τα χαρακτηριστικά του Βήματος 1 + Τεχνικές προδιαγραφές μπαταρίας της Metlen.
 
-## Components
+> * Έξοδος : Ένα ψηφιακό μοντέλο ικανό να υπολογίσει τη φυσική καταπόνηση για οποιοδήποτε μελλοντικό προφίλ φόρτισης/εκφόρτισης του δώσουμε.
 
-### Digital Twin
-- Physics-based simulator (battery dynamics)
-- TimeGAN for synthetic data generation
-- Physics loss constraints (SoC, voltage)
+* Δημιουργία Look-Up Table (LUT) Κόστους Φθοράς:
 
-### Optimizer
-- Cost/reward objective
-- Operational constraints
-- Optimization training
+Τρέχουμε το PyBaMM (Βήμα 2) offline για χιλιάδες πιθανά σενάρια Βάθους Εκφόρτισης (DoD). Μεταφράζουμε τη φυσική φθορά σε ευρώ, διαιρώντας την απώλεια ζωής με το CAPEX της μπαταρίας. Αποθηκεύουμε τα αποτελέσματα σε έναν πίνακα (LUT).
 
-### Dashboard
-- Real-time metrics
-- Time series plots
-- Model comparisons
+> * Είσοδος: Τα αποτελέσματα προσομοίωσης του PyBaMM + Κόστος αντικατάστασης μπαταρίας (€/MW).
+
+> * Έξοδος: Ένας πίνακας (DoD, Θερμοκρασία) -> Marginal Degradation Cost (€/MWh).
+
+
+### PHASE 2: OPTIMIZATION
+
+* Ingestion Δεδομένων Αγοράς (HEnEx DAM) -> παραγωγή `price_signals_15m.csv`
+
+* Διατύπωση Προβλήματος MILP (με εισόδους το `price_signals_15m.csv` και τις εντολές `B`,`S`,`H`)
+
+* Γραμμικοποίηση της Φθοράς με SOS2 vars:  MNLIP -> MILP!!!
+
+* Ενσωμάτωση Τεχνικών Περιορισμών -> περιορισμό διάρκειας συστήματος (π.χ. 2 ώρες max σε πλήρη ισχύ) και τα όρια υγείας (SoC{min,max})
+
+> * Είσοδος: Οι ρυθμιστικοί κανόνες της αγοράς και του ΑΔΜΗΕ.
+
+### PHASE 3: TEST & DELIVERABLE
+
+* Backtesting και Υπολογισμός Εμπορικών Δεικτών (IRR)
+
+* Dashboard (DAM vs Power of BESS, SoC Trajectory, Total profit vs Dedagration cost)
+
+
