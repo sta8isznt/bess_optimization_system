@@ -58,4 +58,6 @@ The scheduling problem is mathematically formulated as a Mixed-Integer Linear Pr
 
 >  To ensure operational readiness for subsequent days and to facilitate continuous multi-day backtesting, a Cycle Continuity Constraint is assumed. This dictates that the State of Charge (SoC) at the end of the 24-hour optimization horizon must equal its initial value (SoC_96​	=SoC_0). This prevents the model from unrealistic energy depletion ('dumping') for short-term profit and ensures the battery remains in a neutral state for the next day's market signals
 
-* Objective Function - `Maximize ∑ [ (Price[t] * (P_sell[t] - P_buy[t]) * dt) - dynamic_deg_cost[t] ]`
+### Objective Function 
+
+`Maximize ∑ [ (Price[t] * (P_sell[t] - P_buy[t]) * dt) - dynamic_deg_cost[t] ]`
