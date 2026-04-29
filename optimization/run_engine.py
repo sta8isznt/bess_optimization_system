@@ -33,6 +33,7 @@ from optimization.backtest_utils import (
 )
 from optimization.backtesting_loaders import (
     DEFAULT_DEGRADATION_LUT_PATH,
+    DEFAULT_PYBAMM_ONLY_LUT_PATH,
     DEFAULT_PRICE_SIGNALS_PATH,
     load_degradation_lut_curve,
     load_price_signal_day,
@@ -48,14 +49,15 @@ from optimization.engine import bess_order
 
 RUN_MODE = "daily"  # Choose "daily" or "annual".
 
-TARGET_DATE = "2025-10-01"  # Used when RUN_MODE = "daily".
+TARGET_DATE = "2025-11-01"  # Used when RUN_MODE = "daily".
 YEAR = 2025  # Used when RUN_MODE = "annual".
 
-DEGRADATION_SOURCE = "lut"  # Choose "lut" or "dummy".
+DEGRADATION_SOURCE = "pybamm_only"  # Choose "lut", "pybamm_only", or "dummy".
 LUT_TEMPERATURE_C = 25.0
 
 PRICE_SIGNALS_CSV = DEFAULT_PRICE_SIGNALS_PATH
 DEGRADATION_LUT_CSV = DEFAULT_DEGRADATION_LUT_PATH
+PYBAMM_ONLY_LUT_CSV = DEFAULT_PYBAMM_ONLY_LUT_PATH
 
 SOLVER_MSG = False
 PROGRESS_EVERY = 25  # Used only for annual runs. Set 0 to disable progress prints.
@@ -83,11 +85,19 @@ def load_degradation_curve(test_params: dict) -> tuple[list[float], list[float],
         source_label = f"{DEGRADATION_LUT_CSV.name} at {LUT_TEMPERATURE_C:g}C"
         return energy_points, cost_points, source_label
 
+    if DEGRADATION_SOURCE == "pybamm_only":
+        energy_points, cost_points = load_degradation_lut_curve(
+            csv_path=PYBAMM_ONLY_LUT_CSV,
+            temperature_c=LUT_TEMPERATURE_C,
+        )
+        source_label = f"{PYBAMM_ONLY_LUT_CSV.name} at {LUT_TEMPERATURE_C:g}C"
+        return energy_points, cost_points, source_label
+
     if DEGRADATION_SOURCE == "dummy":
         energy_points, cost_points = build_dummy_cost_curve(test_params)
         return energy_points, cost_points, "synthetic dummy degradation curve"
 
-    raise ValueError('DEGRADATION_SOURCE must be "lut" or "dummy".')
+    raise ValueError('DEGRADATION_SOURCE must be "lut", "pybamm_only", or "dummy".')
 
 
 def validate_scale_settings(test_params: dict) -> float:

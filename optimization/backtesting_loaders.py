@@ -9,6 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CLEANED_DATA_DIR = BASE_DIR / "data" / "cleaned_data"
 DEFAULT_PRICE_SIGNALS_PATH = CLEANED_DATA_DIR / "price_signals_15m.csv"
 DEFAULT_DEGRADATION_LUT_PATH = CLEANED_DATA_DIR / "Reduced_LUT_Final.csv"
+DEFAULT_PYBAMM_ONLY_LUT_PATH = CLEANED_DATA_DIR / "Reduced_LUT_PyBaMM_Only.csv"
 
 
 def load_price_signal_day(

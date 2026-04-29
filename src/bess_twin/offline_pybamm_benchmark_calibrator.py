@@ -10,7 +10,7 @@ dispatch simulator.
 Workflow:
     synthetic / market-realistic LUT
         + optional PyBaMM representative duty-cycle simulations
-        + physics-shaped DoD-temperature-C-rate curve
+        + physics-shaped DoD-C-rate curve at fixed 25C
         -> degradation_lut_pybamm_calibrated.csv
 
 This output LUT is then consumed by the market BESS pipeline.
@@ -58,11 +58,11 @@ class CalibratorConfig:
     soh_eol: float = 0.80
     replacement_cost_eur_per_MWh_capacity: float = 60_000.0
 
-    # Dense LUT grid.
+    # Dense LUT grid. Temperature is fixed at 25C for DAM optimizer use.
     lut_min_dod: float = 0.005
-    lut_max_dod: float = 0.25
+    lut_max_dod: float = 0.125
     lut_dod_step: float = 0.005
-    temp_values_c: Tuple[float, ...] = (10, 20, 25, 30, 35, 40)
+    temp_values_c: Tuple[float, ...] = (25.0,)
 
     # Curve shape: approximately linear at the start, exponential after knee.
     ref_dod: float = 0.10
@@ -71,7 +71,7 @@ class CalibratorConfig:
     dod_knee: float = 0.10
     linear_exponent: float = 1.05
     exponential_strength: float = 2.60
-    temp_coeff_per_C: float = 0.025
+    temp_coeff_per_C: float = 0.0
     c_rate_exponent: float = 0.18
 
     # Scale. If a base LUT exists, this is overwritten by the value near ref_dod/ref_temp.
@@ -212,7 +212,8 @@ def fallback_relative_factor(dod: float, temp_c: float, cfg: CalibratorConfig) -
     # Kept for backward compatibility. This is the physics relative factor.
     c_rate = dod / cfg.dt_h
     dod_factor = linear_then_exponential_dod_factor(dod, cfg)
-    temp_factor = float(np.exp(cfg.temp_coeff_per_C * (temp_c - cfg.ref_temp_C)))
+    # Temperature is intentionally fixed at 25C for the DAM optimizer LUT.
+    temp_factor = 1.0
     c_rate_factor = (max(c_rate, 1e-9) / cfg.ref_c_rate) ** cfg.c_rate_exponent
     return float(dod_factor * temp_factor * c_rate_factor)
 
@@ -288,6 +289,7 @@ def run_pybamm_point(dod: float, temp_c: float, cfg: CalibratorConfig) -> Dict[s
     The absolute SOH drop is often too chemistry/parameter dependent for direct BESS
     costing, so we use it mainly to obtain a RELATIVE degradation factor.
     """
+    temp_c = float(cfg.ref_temp_C)
     c_rate = dod / cfg.dt_h
 
     try:
@@ -590,7 +592,7 @@ def export_report(lut: pd.DataFrame, points: pd.DataFrame, output_dir: Path) -> 
         y="deg_cost_surface_full",
         color="temperature_c",
         markers=True,
-        title="1. Full diagnostic degradation surface: DoD 0.005–0.25",
+        title="1. Fixed-25C diagnostic degradation curve",
         labels={"dod": "DoD", "deg_cost_surface_full": "EUR/MWh throughput", "temperature_c": "Temperature °C"},
     )
 
@@ -601,7 +603,7 @@ def export_report(lut: pd.DataFrame, points: pd.DataFrame, output_dir: Path) -> 
         y="deg_cost_final",
         color="temperature_c",
         markers=True,
-        title="2. Optimizer-valid region: DoD ≤ 0.125",
+        title="2. Optimizer-valid fixed-25C region",
         labels={"dod": "DoD", "deg_cost_final": "EUR/MWh throughput", "temperature_c": "Temperature °C"},
     )
 
@@ -609,7 +611,7 @@ def export_report(lut: pd.DataFrame, points: pd.DataFrame, output_dir: Path) -> 
     fig3 = px.imshow(
         mask,
         aspect="auto",
-        title="3. Validity mask: invalid high-DoD points retained",
+        title="3. Validity mask at fixed 25C",
         labels={"x": "DoD", "y": "Temperature °C", "color": "Valid"},
     )
 
@@ -633,7 +635,7 @@ def export_report(lut: pd.DataFrame, points: pd.DataFrame, output_dir: Path) -> 
         color="factor_type",
         line_dash="temperature_c",
         markers=True,
-        title="4. PyBaMM vs physics relative factors",
+        title="4. PyBaMM vs physics relative factors at fixed 25C",
         labels={"dod": "DoD", "relative_factor": "relative factor", "temperature_c": "Temperature °C"},
     )
 
@@ -647,7 +649,7 @@ def export_report(lut: pd.DataFrame, points: pd.DataFrame, output_dir: Path) -> 
     html = [
         "<html><head><meta charset='utf-8'><title>PyBaMM Offline Calibration Report</title></head><body>",
         "<h1>PyBaMM Offline Benchmark Calibration Report</h1>",
-        "<p>PyBaMM is used only offline as a relative benchmark/calibration layer. The runtime BESS pipeline consumes the exported CSV and does not run PyBaMM.</p>",
+        "<p>PyBaMM is used only offline as a relative benchmark/calibration layer. Temperature is fixed at 25C for the DAM optimizer LUT.</p>",
         "<h2>1. Full diagnostic surface</h2>",
         pio.to_html(fig1, full_html=False, include_plotlyjs="cdn"),
         "<h2>2. Optimizer-valid region</h2>",
@@ -671,11 +673,11 @@ def run_calibration(input_dir: Path, output_dir: Path, cfg: CalibratorConfig) ->
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_lut, base_lut_source = load_base_lut(input_dir)
+    fixed_temperature_c = float(cfg.ref_temp_C)
 
     rows = []
     for dod in _dense_dod_grid(cfg):
-        for temp in cfg.temp_values_c:
-            rows.append(run_pybamm_point(float(dod), float(temp), cfg))
+        rows.append(run_pybamm_point(float(dod), fixed_temperature_c, cfg))
 
     raw_points = pd.DataFrame(rows)
     points = normalize_benchmark_factors(raw_points, cfg)

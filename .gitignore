@@ -84,3 +84,14 @@ optimization/daily_outputs/
 
 # Data
 optimization/data/HeNex_data
+
+# PyBaMM training diagnostics
+src/bess_twin/training_statistics/
+
+# Root-level temporary PyBaMM outputs
+/Reduced_LUT_PyBaMM_Only.csv
+/pybamm_only_calendar_baseline.csv
+/pybamm_only_dod_points.csv
+/pybamm_only_dod_degradation_lut.csv
+/pybamm_only_dod_report.md
+/pybamm_only_dod_manifest.json
