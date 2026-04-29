@@ -26,6 +26,17 @@
 
 > * Έξοδος: Ένας πίνακας (DoD, Θερμοκρασία) -> Marginal Degradation Cost (€/MWh).
 
+#### PyBaMM LUT Generation (Digital Twin Physical Layer)
+
+Use the physical layer script to run SPM + thermal + degradation simulations and create a LUT:
+
+```bash
+python scripts/generate_lut.py --dod-range 0.1,1.0,0.1 --temp-range 10,45,5 --output lut_dod_temp.csv
+```
+
+This produces a LUT in `data/processed/` with columns:
+`dod`, `temperature_c`, `soh_start`, `soh_end`, `soh_drop`, `energy_mwh`, `v_deg_eur_per_mwh`.
+
 
 ### PHASE 2: OPTIMIZATION
 
