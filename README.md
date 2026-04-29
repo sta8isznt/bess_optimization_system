@@ -23,22 +23,19 @@ make install
 
 ## Common Commands
 
-```bash
-make dummy-backtest
-make annual-backtest
-make clean
-```
+Edit `RUN_MODE` near the top of `optimization/run_optimization_backtest.py`
+to choose `"daily"` or `"annual"`, then run that file from the IDE.
 
 ## Generated Outputs
 
 These paths are local artefacts and are ignored by git:
 
 - `data/produced_data/`
-- `optimization/dummy_outputs/`
+- `optimization/daily_outputs/`
 - `optimization/annual_outputs/`
 - `optimization/Results_*/`
 
 The tracked optimizer inputs are:
 
-- `optimization/price_signals_15m.csv`
-- `optimization/Reduced_LUT_Final.csv`
+- `optimization/data/cleaned_data/price_signals_15m.csv`
+- `optimization/data/cleaned_data/Reduced_LUT_Final.csv`

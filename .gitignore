@@ -78,3 +78,9 @@ htmlcov/
 
 # Time GAN
 src/time_gan
+
+# Backtesting
+optimization/daily_outputs/
+
+# Data
+optimization/data/HeNex_data

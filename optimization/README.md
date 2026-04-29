@@ -5,21 +5,14 @@ runners.
 
 ## Inputs
 
-- `price_signals_15m.csv`: 15-minute DAM price signal used by the default runs.
-- `Reduced_LUT_Final.csv`: degradation-cost lookup table.
+- `data/cleaned_data/price_signals_15m.csv`: 15-minute DAM price signal used by the default runs.
+- `data/cleaned_data/Reduced_LUT_Final.csv`: degradation-cost lookup table.
 - `config.py`: battery power, capacity, efficiency, SoC, and timestep settings.
-
-Raw daily DAM Excel downloads under `Results_*` are treated as local inputs and
-are ignored by git.
 
 ## Run
 
-From the repository root:
-
-```bash
-python optimization/run_dummy_optimization_test.py
-python optimization/run_annual_2025_backtest.py
-```
+Edit the settings at the top of `run_optimization_backtest.py`, especially
+`RUN_MODE = "daily"` or `RUN_MODE = "annual"`, then run that file from the IDE.
 
 The scripts write local outputs under:
 
