@@ -9,7 +9,7 @@ def henexing(folder_path):
     
     if not all_files:
         print(f"Not found {folder_path}!")
-        return None
+        return pd.DataFrame(columns=['DELIVERY_MTU', 'MCP'])
 
     df_list = []
     
@@ -21,5 +21,8 @@ def henexing(folder_path):
         except Exception as e:
             print(f"Error at {file}: {e}")
             
+    if not df_list:
+        return pd.DataFrame(columns=['DELIVERY_MTU', 'MCP'])
+
     combined_df = pd.concat(df_list, ignore_index=True)
     return combined_df

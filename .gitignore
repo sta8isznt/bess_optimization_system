@@ -42,9 +42,15 @@ Thumbs.db
 data/raw/*
 data/synthetic/*
 data/processed/*
+data/produced_data/
 models/**/*.pt
 models/**/*.pth
 checkpoints/**/*.pt
+
+# Optimization outputs and local market downloads
+optimization/dummy_outputs/
+optimization/annual_outputs/
+optimization/Results_*/
 
 # Logs
 logs/**
@@ -53,10 +59,12 @@ logs/**
 # Experiments
 experiments/runs/**
 .wandb/
+pipeline_audit_*.md
 
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+*.ipynb
 
 # Testing
 .pytest_cache/
@@ -66,3 +74,7 @@ htmlcov/
 # Environment
 .env
 .env.local
+
+
+# Time GAN
+src/time_gan
