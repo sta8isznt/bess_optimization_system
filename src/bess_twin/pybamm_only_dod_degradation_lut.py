@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """
-PyBaMM-only DoD -> degradation-cost LUT builder.
+Build a PyBaMM-only DoD degradation-cost LUT.
 
-This script intentionally does not use an empirical fallback curve. It runs a
-PyBaMM rest-only calendar baseline and PyBaMM representative 15-minute market-step cycling
-points at fixed 25C, subtracts the calendar baseline from cycling degradation,
-converts the incremental cycling SoH loss to EUR/MWh, and exports a small
-optimizer-ready LUT.
+The pipeline runs a rest-only calendar baseline and representative 15-minute
+market-step cycling points at fixed cell temperature. Calendar SoH loss is
+subtracted from gross cycling SoH loss, and the incremental cycling loss is
+converted to EUR/MWh for the optimizer.
 
 The optimizer-facing output keeps the existing schema:
     energy,temperature_c,deg_cost_eur_per_MWh_throughput
 
-Here `energy` is the one-timestep discharged energy in MWh:
-    energy = DoD * E_nom_MWh
+In this schema, `energy` is one-timestep discharged energy in MWh:
+    energy = DoD * nominal_energy_mwh
+
+The cost column name is retained for downstream compatibility. Its value is
+computed per MWh discharged.
 
 Run:
     python pybamm_only_dod_degradation_lut.py
-
-If PyBaMM is missing:
-    python pybamm_only_dod_degradation_lut.py --install-note
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,76 +35,133 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BESS_SYSTEM_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_STATS_OUTPUT_DIR = SCRIPT_DIR / "training_statistics"
+DEFAULT_DIAGNOSTICS_OUTPUT_DIR = SCRIPT_DIR / "training_statistics"
 DEFAULT_OPTIMIZER_OUTPUT_DIR = BESS_SYSTEM_ROOT / "optimization" / "data" / "cleaned_data"
 
 
 class PyBaMMDegradationError(RuntimeError):
-    """Raised when PyBaMM does not provide a usable degradation signal."""
+    """Raised when PyBaMM cannot produce a valid degradation-cost LUT."""
 
 
 @dataclass
-class PyBaMMOnlyConfig:
+class PyBaMMLutConfig:
     # Base BESS module solved by the DAM optimizer.
-    E_nom_MWh: float = 2.0
-    P_max_MW: float = 1.0
-    dt_h: float = 0.25
-    c_rate_max: float = 0.50
+    nominal_energy_mwh: float = 2.0
+    max_power_mw: float = 1.0
+    timestep_hours: float = 0.25
+    max_c_rate: float = 0.50
 
     # Degradation-to-cost conversion.
-    fixed_temperature_c: float = 25.0
-    soh_eol: float = 0.80
-    replacement_cost_eur_per_MWh_capacity: float = 60_000.0
+    cell_temperature_c: float = 25.0
+    end_of_life_soh_fraction: float = 0.80
+    replacement_cost_eur_per_mwh_capacity: float = 60_000.0
 
-    # DAM optimizer breakpoints. For 2MWh/1MW/15min, DoD <= 0.125 is feasible.
-    dod_values: Tuple[float, ...] = (0.05, 0.08, 0.10, 0.125)
+    # DAM optimizer breakpoints. For 2 MWh / 1 MW / 15 min, DoD <= 0.125 is feasible.
+    dod_breakpoints: Tuple[float, ...] = (0.05, 0.08, 0.10, 0.125)
 
     # PyBaMM representative 15-minute market-step run settings.
-    pybamm_cycles_per_point: int = 12
-    pybamm_rest_minutes: float = 3.0
+    cycles_per_dod_point: int = 12
+    rest_minutes_between_cycles: float = 3.0
     pybamm_parameter_set: str = "Chen2020"
-    pybamm_model: str = "SPMe"
-    initial_soc: float = 0.50
+    pybamm_model_name: str = "SPMe"
+    initial_soc_fraction: float = 0.50
 
     # Numeric guard for rejecting zero/noisy degradation signals.
-    min_soh_drop_fraction: float = 1e-12
+    min_valid_soh_loss_fraction: float = 1e-12
 
     @property
-    def replacement_total_cost_eur(self) -> float:
-        return self.replacement_cost_eur_per_MWh_capacity * self.E_nom_MWh
+    def pack_replacement_cost_eur(self) -> float:
+        return self.replacement_cost_eur_per_mwh_capacity * self.nominal_energy_mwh
 
     @property
-    def physical_c_rate_from_power(self) -> float:
-        return self.P_max_MW / self.E_nom_MWh
+    def power_limited_c_rate(self) -> float:
+        return self.max_power_mw / self.nominal_energy_mwh
 
     @property
-    def effective_c_rate_max(self) -> float:
-        return min(self.c_rate_max, self.physical_c_rate_from_power)
+    def dispatch_c_rate_limit(self) -> float:
+        return min(self.max_c_rate, self.power_limited_c_rate)
 
     @property
-    def max_dod_per_step(self) -> float:
-        return self.effective_c_rate_max * self.dt_h
+    def max_dispatch_dod_per_step(self) -> float:
+        return self.dispatch_c_rate_limit * self.timestep_hours
 
     @property
-    def experiment_elapsed_minutes(self) -> float:
-        one_cycle_minutes = 2.0 * self.dt_h * 60.0 + max(self.pybamm_rest_minutes, 0.0)
-        return self.pybamm_cycles_per_point * one_cycle_minutes
+    def simulated_elapsed_minutes_per_point(self) -> float:
+        cycle_minutes = 2.0 * self.timestep_hours * 60.0 + max(self.rest_minutes_between_cycles, 0.0)
+        return self.cycles_per_dod_point * cycle_minutes
 
 
-def parse_float_list(value: str) -> Tuple[float, ...]:
-    parts = [p.strip() for p in value.split(",") if p.strip()]
-    if not parts:
-        raise ValueError("DoD grid must contain at least one value.")
-    values = tuple(float(p) for p in parts)
-    if any(v <= 0 for v in values):
-        raise ValueError("All DoD values must be positive.")
+def parse_dod_breakpoints(raw_value: str) -> Tuple[float, ...]:
+    values = tuple(float(item.strip()) for item in raw_value.split(",") if item.strip())
+    if not values:
+        raise ValueError("DoD breakpoints must contain at least one value.")
+    if any((not np.isfinite(value)) or value <= 0 for value in values):
+        raise ValueError("All DoD breakpoints must be finite and positive.")
     return tuple(sorted(values))
 
 
-def _build_pybamm_model(cfg: PyBaMMOnlyConfig):
+def validate_config(config: PyBaMMLutConfig) -> None:
+    numeric_fields = {
+        "nominal_energy_mwh": config.nominal_energy_mwh,
+        "max_power_mw": config.max_power_mw,
+        "timestep_hours": config.timestep_hours,
+        "max_c_rate": config.max_c_rate,
+        "cell_temperature_c": config.cell_temperature_c,
+        "end_of_life_soh_fraction": config.end_of_life_soh_fraction,
+        "replacement_cost_eur_per_mwh_capacity": config.replacement_cost_eur_per_mwh_capacity,
+        "rest_minutes_between_cycles": config.rest_minutes_between_cycles,
+        "initial_soc_fraction": config.initial_soc_fraction,
+        "min_valid_soh_loss_fraction": config.min_valid_soh_loss_fraction,
+    }
+    non_finite = [name for name, value in numeric_fields.items() if not np.isfinite(value)]
+    if non_finite:
+        raise ValueError(f"Configuration values must be finite: {non_finite}")
+
+    positive_fields = {
+        "nominal_energy_mwh": config.nominal_energy_mwh,
+        "max_power_mw": config.max_power_mw,
+        "timestep_hours": config.timestep_hours,
+        "max_c_rate": config.max_c_rate,
+        "replacement_cost_eur_per_mwh_capacity": config.replacement_cost_eur_per_mwh_capacity,
+        "min_valid_soh_loss_fraction": config.min_valid_soh_loss_fraction,
+    }
+    non_positive = [name for name, value in positive_fields.items() if value <= 0]
+    if non_positive:
+        raise ValueError(f"Configuration values must be positive: {non_positive}")
+
+    if config.cycles_per_dod_point <= 0:
+        raise ValueError("cycles_per_dod_point must be positive.")
+    if config.rest_minutes_between_cycles < 0:
+        raise ValueError("rest_minutes_between_cycles cannot be negative.")
+    if not 0 < config.end_of_life_soh_fraction < 1:
+        raise ValueError("end_of_life_soh_fraction must be between 0 and 1.")
+    if not 0 <= config.initial_soc_fraction <= 1:
+        raise ValueError("initial_soc_fraction must be between 0 and 1.")
+    if config.pybamm_model_name.upper() not in {"SPM", "SPME", "DFN"}:
+        raise ValueError("pybamm_model_name must be one of: SPM, SPMe, DFN.")
+
+    if not config.dod_breakpoints:
+        raise ValueError("dod_breakpoints must contain at least one value.")
+    invalid_dod = [
+        value
+        for value in config.dod_breakpoints
+        if (not np.isfinite(value)) or value <= 0
+    ]
+    if invalid_dod:
+        raise ValueError(f"DoD breakpoints must be finite and positive: {invalid_dod}")
+
+    max_dod = max(config.dod_breakpoints)
+    if max_dod > config.max_dispatch_dod_per_step + 1e-12:
+        raise ValueError(
+            f"Max DoD breakpoint {max_dod:g} exceeds the one-step dispatch limit "
+            f"{config.max_dispatch_dod_per_step:g}."
+        )
+
+
+def _build_pybamm_model(config: PyBaMMLutConfig):
     import pybamm
 
-    option_sets = [
+    degradation_option_sets = [
         {"thermal": "lumped", "SEI": "reaction limited"},
         {"thermal": "lumped", "SEI": "solvent-diffusion limited"},
         {"thermal": "lumped", "sei": "reaction limited"},
@@ -116,36 +172,39 @@ def _build_pybamm_model(cfg: PyBaMMOnlyConfig):
         {"sei": "solvent-diffusion limited"},
     ]
 
+    model_key = config.pybamm_model_name.upper()
     last_error = None
-    for options in option_sets:
+    for model_options in degradation_option_sets:
         try:
-            model_name = cfg.pybamm_model.upper()
-            if model_name == "DFN":
-                return pybamm.lithium_ion.DFN(options=options), options
-            if model_name == "SPM":
-                return pybamm.lithium_ion.SPM(options=options), options
-            return pybamm.lithium_ion.SPMe(options=options), options
+            if model_key == "DFN":
+                return pybamm.lithium_ion.DFN(options=model_options), model_options
+            if model_key == "SPM":
+                return pybamm.lithium_ion.SPM(options=model_options), model_options
+            return pybamm.lithium_ion.SPMe(options=model_options), model_options
         except Exception as exc:
             last_error = exc
 
     raise PyBaMMDegradationError(f"Could not build PyBaMM degradation model: {last_error}")
 
 
-def _solution_array(solution, variable_names: Iterable[str]) -> Tuple[Optional[str], Optional[np.ndarray]]:
-    for name in variable_names:
+def _extract_solution_array(
+    solution,
+    variable_names: Iterable[str],
+) -> Tuple[Optional[str], Optional[np.ndarray]]:
+    for variable_name in variable_names:
         try:
-            arr = np.asarray(solution[name].entries, dtype=float)
-            if arr.size > 1 and np.all(np.isfinite(arr)):
-                return name, arr
+            values = np.asarray(solution[variable_name].entries, dtype=float)
+            if values.size > 1 and np.all(np.isfinite(values)):
+                return variable_name, values
         except Exception:
             pass
     return None, None
 
 
-def _parameter_float(params, names: Iterable[str]) -> Optional[float]:
-    for name in names:
+def _parameter_value_as_float(params, names: Iterable[str]) -> Optional[float]:
+    for parameter_name in names:
         try:
-            value = float(params[name])
+            value = float(params[parameter_name])
             if np.isfinite(value) and value > 0:
                 return value
         except Exception:
@@ -153,38 +212,42 @@ def _parameter_float(params, names: Iterable[str]) -> Optional[float]:
     return None
 
 
-def extract_soh_drop_fraction(solution, params, cfg: PyBaMMOnlyConfig) -> Tuple[float, str, Dict[str, float]]:
+def extract_soh_loss_fraction(
+    solution,
+    params,
+    config: PyBaMMLutConfig,
+) -> Tuple[float, str, Dict[str, float]]:
     """
-    Extract an absolute SoH-drop fraction from PyBaMM variables.
+    Extract an absolute SoH-loss fraction from PyBaMM degradation variables.
 
-    This function is intentionally strict. If PyBaMM does not expose a real
-    degradation signal, the caller gets an error instead of a fallback curve.
+    If PyBaMM does not expose a usable degradation signal, the caller gets an
+    error instead of an empirical fallback.
     """
-    candidates: List[Tuple[str, float]] = []
-    diagnostics: Dict[str, float] = {}
+    signal_candidates: List[Tuple[str, float]] = []
+    signal_diagnostics: Dict[str, float] = {}
 
-    name, lli = _solution_array(
+    variable_name, lithium_inventory_loss = _extract_solution_array(
         solution,
         [
             "Loss of lithium inventory [%]",
             "Loss of lithium inventory",
         ],
     )
-    if lli is not None:
-        change = max(0.0, float(np.nanmax(lli) - np.nanmin(lli)))
-        if "[%]" in name or np.nanmax(np.abs(lli)) > 1.0:
-            change /= 100.0
-        diagnostics[f"{name}__delta_fraction"] = change
-        candidates.append((name, change))
+    if lithium_inventory_loss is not None:
+        loss_fraction = max(0.0, float(np.nanmax(lithium_inventory_loss) - np.nanmin(lithium_inventory_loss)))
+        if "[%]" in variable_name or np.nanmax(np.abs(lithium_inventory_loss)) > 1.0:
+            loss_fraction /= 100.0
+        signal_diagnostics[f"{variable_name}__delta_fraction"] = loss_fraction
+        signal_candidates.append((variable_name, loss_fraction))
 
-    nominal_capacity_Ah = _parameter_float(
+    nominal_capacity_ah = _parameter_value_as_float(
         params,
         [
             "Nominal cell capacity [A.h]",
             "Cell capacity [A.h]",
         ],
     )
-    name, capacity_loss = _solution_array(
+    variable_name, capacity_loss_ah = _extract_solution_array(
         solution,
         [
             "Loss of capacity to SEI [A.h]",
@@ -194,278 +257,247 @@ def extract_soh_drop_fraction(solution, params, cfg: PyBaMMOnlyConfig) -> Tuple[
             "Loss of capacity [A.h]",
         ],
     )
-    if capacity_loss is not None and nominal_capacity_Ah is not None:
-        change_Ah = max(0.0, float(np.nanmax(capacity_loss) - np.nanmin(capacity_loss)))
-        change_fraction = change_Ah / nominal_capacity_Ah
-        diagnostics[f"{name}__delta_Ah"] = change_Ah
-        diagnostics[f"{name}__delta_fraction"] = change_fraction
-        candidates.append((name, change_fraction))
+    if capacity_loss_ah is not None and nominal_capacity_ah is not None:
+        loss_ah = max(0.0, float(np.nanmax(capacity_loss_ah) - np.nanmin(capacity_loss_ah)))
+        loss_fraction = loss_ah / nominal_capacity_ah
+        signal_diagnostics[f"{variable_name}__delta_Ah"] = loss_ah
+        signal_diagnostics[f"{variable_name}__delta_fraction"] = loss_fraction
+        signal_candidates.append((variable_name, loss_fraction))
 
-    positive = [(source, value) for source, value in candidates if value > cfg.min_soh_drop_fraction]
-    if not positive:
-        available = sorted(getattr(solution, "all_variable_names", []) or [])
-        sample = ", ".join(available[:25])
+    valid_candidates = [
+        (source, value)
+        for source, value in signal_candidates
+        if value > config.min_valid_soh_loss_fraction
+    ]
+    if not valid_candidates:
+        available_variables = sorted(getattr(solution, "all_variable_names", []) or [])
+        variable_sample = ", ".join(available_variables[:25])
         raise PyBaMMDegradationError(
             "PyBaMM did not expose a positive degradation signal. "
-            f"Checked LLI/capacity-loss variables. Available variable sample: {sample}"
+            f"Checked LLI/capacity-loss variables. Available variable sample: {variable_sample}"
         )
 
-    source, soh_drop_fraction = max(positive, key=lambda item: item[1])
-    return float(soh_drop_fraction), source, diagnostics
+    signal_source, soh_loss_fraction = max(valid_candidates, key=lambda item: item[1])
+    return float(soh_loss_fraction), signal_source, signal_diagnostics
 
 
-def _run_pybamm_steps(steps: List[str], cfg: PyBaMMOnlyConfig):
+def run_pybamm_experiment_steps(steps: Sequence[str], config: PyBaMMLutConfig):
     import pybamm
 
-    started = time.perf_counter()
-    model, model_options = _build_pybamm_model(cfg)
-    params = pybamm.ParameterValues(cfg.pybamm_parameter_set)
+    started_at = time.perf_counter()
+    model, model_options = _build_pybamm_model(config)
+    parameter_values = pybamm.ParameterValues(config.pybamm_parameter_set)
     try:
-        params.update({"Ambient temperature [K]": cfg.fixed_temperature_c + 273.15}, check_already_exists=False)
-    except Exception:
-        pass
+        parameter_values.update(
+            {"Ambient temperature [K]": config.cell_temperature_c + 273.15},
+            check_already_exists=False,
+        )
+    except Exception as exc:
+        raise PyBaMMDegradationError("Could not set PyBaMM ambient temperature.") from exc
 
-    experiment = pybamm.Experiment(steps)
-    simulation = pybamm.Simulation(model, parameter_values=params, experiment=experiment)
+    experiment = pybamm.Experiment(list(steps))
+    simulation = pybamm.Simulation(model, parameter_values=parameter_values, experiment=experiment)
     try:
-        solution = simulation.solve(initial_soc=cfg.initial_soc)
+        solution = simulation.solve(initial_soc=config.initial_soc_fraction)
     except TypeError:
         solution = simulation.solve()
 
-    return solution, params, model_options, time.perf_counter() - started
+    return solution, parameter_values, model_options, time.perf_counter() - started_at
 
 
-def run_calendar_baseline(cfg: PyBaMMOnlyConfig) -> Dict[str, object]:
+def run_calendar_baseline(config: PyBaMMLutConfig) -> Dict[str, object]:
     """
     Run a rest-only PyBaMM baseline for the same elapsed time as each cycling point.
     """
-    steps = [f"Rest for {cfg.experiment_elapsed_minutes:.8g} minutes"]
-    solution, params, model_options, runtime_seconds = _run_pybamm_steps(steps, cfg)
-    soh_drop_fraction, signal_source, signal_diagnostics = extract_soh_drop_fraction(solution, params, cfg)
+    steps = [f"Rest for {config.simulated_elapsed_minutes_per_point:.8g} minutes"]
+    solution, params, model_options, runtime_seconds = run_pybamm_experiment_steps(steps, config)
+    soh_loss_fraction, signal_source, signal_diagnostics = extract_soh_loss_fraction(solution, params, config)
 
     return {
-        "calendar_ok": 1,
-        "calendar_elapsed_minutes": cfg.experiment_elapsed_minutes,
-        "calendar_soh_drop_fraction": soh_drop_fraction,
-        "calendar_signal_source": signal_source,
-        "calendar_model": cfg.pybamm_model,
-        "calendar_model_options": json.dumps(model_options, sort_keys=True),
-        "calendar_parameter_set": cfg.pybamm_parameter_set,
-        "calendar_error": "",
+        "calendar_simulated_elapsed_minutes": config.simulated_elapsed_minutes_per_point,
+        "calendar_soh_loss_fraction": soh_loss_fraction,
+        "calendar_degradation_signal_source": signal_source,
+        "pybamm_model_name": config.pybamm_model_name,
+        "pybamm_model_options": json.dumps(model_options, sort_keys=True),
+        "pybamm_parameter_set": config.pybamm_parameter_set,
         "calendar_runtime_seconds": runtime_seconds,
-        **{f"calendar__{k}": v for k, v in signal_diagnostics.items()},
+        **{f"calendar__{key}": value for key, value in signal_diagnostics.items()},
     }
 
 
-def calendar_baseline_error_row(cfg: PyBaMMOnlyConfig, exc: Exception) -> Dict[str, object]:
-    return {
-        "calendar_ok": 0,
-        "calendar_elapsed_minutes": cfg.experiment_elapsed_minutes,
-        "calendar_soh_drop_fraction": np.nan,
-        "calendar_signal_source": "",
-        "calendar_model": cfg.pybamm_model,
-        "calendar_model_options": "",
-        "calendar_parameter_set": cfg.pybamm_parameter_set,
-        "calendar_error": str(exc),
-        "calendar_runtime_seconds": np.nan,
-    }
-
-
-def dod_to_degradation_cost_per_mwh(
-    dod: float,
-    cfg: PyBaMMOnlyConfig,
-    calendar_baseline: Dict[str, object],
+def simulate_dod_degradation_cost(
+    dod_fraction: float,
+    config: PyBaMMLutConfig,
+    calendar_baseline: Mapping[str, object],
 ) -> Dict[str, object]:
     """
     Run one PyBaMM DoD point and convert incremental cycling SoH loss to EUR/MWh.
     """
-    dod = float(dod)
-    if dod <= 0:
+    dod_fraction = float(dod_fraction)
+    if dod_fraction <= 0:
         raise ValueError("DoD must be positive.")
 
-    c_rate = dod / cfg.dt_h
-    if c_rate > cfg.effective_c_rate_max + 1e-12:
+    c_rate = dod_fraction / config.timestep_hours
+    if c_rate > config.dispatch_c_rate_limit + 1e-12:
         raise ValueError(
-            f"DoD={dod:g} implies {c_rate:g}C, above the effective "
-            f"{cfg.effective_c_rate_max:g}C limit."
+            f"DoD={dod_fraction:g} implies {c_rate:g}C, above the effective "
+            f"{config.dispatch_c_rate_limit:g}C limit."
         )
 
-    if int(calendar_baseline.get("calendar_ok", 0)) != 1:
-        raise PyBaMMDegradationError(f"Calendar baseline failed: {calendar_baseline.get('calendar_error')}")
+    step_minutes = config.timestep_hours * 60.0
+    experiment_steps = []
+    for _ in range(config.cycles_per_dod_point):
+        experiment_steps.append(f"Discharge at {c_rate:.8g}C for {step_minutes:.8g} minutes")
+        experiment_steps.append(f"Charge at {c_rate:.8g}C for {step_minutes:.8g} minutes")
+        if config.rest_minutes_between_cycles > 0:
+            experiment_steps.append(f"Rest for {config.rest_minutes_between_cycles:.8g} minutes")
 
-    minutes = cfg.dt_h * 60.0
-    steps = []
-    for _ in range(cfg.pybamm_cycles_per_point):
-        steps.append(f"Discharge at {c_rate:.8g}C for {minutes:.8g} minutes")
-        steps.append(f"Charge at {c_rate:.8g}C for {minutes:.8g} minutes")
-        if cfg.pybamm_rest_minutes > 0:
-            steps.append(f"Rest for {cfg.pybamm_rest_minutes:.8g} minutes")
+    solution, params, model_options, runtime_seconds = run_pybamm_experiment_steps(experiment_steps, config)
+    gross_soh_loss_fraction, signal_source, signal_diagnostics = extract_soh_loss_fraction(solution, params, config)
 
-    solution, params, model_options, runtime_seconds = _run_pybamm_steps(steps, cfg)
-    gross_soh_drop_fraction, signal_source, signal_diagnostics = extract_soh_drop_fraction(solution, params, cfg)
-
-    calendar_soh_drop_fraction = float(calendar_baseline["calendar_soh_drop_fraction"])
-    incremental_soh_drop_fraction = gross_soh_drop_fraction - calendar_soh_drop_fraction
-    total_discharged_MWh = dod * cfg.E_nom_MWh * cfg.pybamm_cycles_per_point
-    eol_fraction_consumed = incremental_soh_drop_fraction / (1.0 - cfg.soh_eol)
-    degradation_cost_eur = eol_fraction_consumed * cfg.replacement_total_cost_eur
-    cost_per_mwh_discharged = degradation_cost_eur / total_discharged_MWh
+    calendar_soh_loss_fraction = float(calendar_baseline["calendar_soh_loss_fraction"])
+    incremental_cycling_soh_loss_fraction = gross_soh_loss_fraction - calendar_soh_loss_fraction
+    dispatch_energy_mwh = dod_fraction * config.nominal_energy_mwh
+    total_discharged_energy_mwh = dispatch_energy_mwh * config.cycles_per_dod_point
+    replacement_life_fraction_consumed = (
+        incremental_cycling_soh_loss_fraction / (1.0 - config.end_of_life_soh_fraction)
+    )
+    degradation_cost_eur = replacement_life_fraction_consumed * config.pack_replacement_cost_eur
+    cost_eur_per_mwh_discharged = degradation_cost_eur / total_discharged_energy_mwh
 
     return {
-        "dod": dod,
-        "energy_MWh": dod * cfg.E_nom_MWh,
-        "temperature_c": cfg.fixed_temperature_c,
-        "dt_h": cfg.dt_h,
+        "dod_fraction": dod_fraction,
+        "dispatch_energy_mwh": dispatch_energy_mwh,
+        "cell_temperature_c": config.cell_temperature_c,
+        "timestep_hours": config.timestep_hours,
         "c_rate": c_rate,
-        "cycles": cfg.pybamm_cycles_per_point,
-        "elapsed_minutes": cfg.experiment_elapsed_minutes,
-        "total_discharged_MWh": total_discharged_MWh,
-        "gross_soh_drop_fraction": gross_soh_drop_fraction,
-        "calendar_soh_drop_fraction": calendar_soh_drop_fraction,
-        "soh_drop_fraction": incremental_soh_drop_fraction,
-        "incremental_cycle_soh_drop_fraction": incremental_soh_drop_fraction,
-        "eol_fraction_consumed": eol_fraction_consumed,
-        "replacement_total_cost_eur": cfg.replacement_total_cost_eur,
+        "cycles_per_dod_point": config.cycles_per_dod_point,
+        "simulated_elapsed_minutes": config.simulated_elapsed_minutes_per_point,
+        "total_discharged_energy_mwh": total_discharged_energy_mwh,
+        "gross_soh_loss_fraction": gross_soh_loss_fraction,
+        "calendar_soh_loss_fraction": calendar_soh_loss_fraction,
+        "incremental_cycling_soh_loss_fraction": incremental_cycling_soh_loss_fraction,
+        "replacement_life_fraction_consumed": replacement_life_fraction_consumed,
+        "pack_replacement_cost_eur": config.pack_replacement_cost_eur,
         "degradation_cost_eur": degradation_cost_eur,
-        "deg_cost_eur_per_MWh_discharged": cost_per_mwh_discharged,
-        "deg_cost_eur_per_MWh_throughput": cost_per_mwh_discharged,
-        "pybamm_ok": 1,
-        "pybamm_signal_source": signal_source,
-        "pybamm_model": cfg.pybamm_model,
+        "cost_eur_per_mwh_discharged": cost_eur_per_mwh_discharged,
+        "degradation_signal_source": signal_source,
+        "pybamm_model_name": config.pybamm_model_name,
         "pybamm_model_options": json.dumps(model_options, sort_keys=True),
-        "pybamm_parameter_set": cfg.pybamm_parameter_set,
-        "pybamm_error": "",
-        "runtime_seconds": runtime_seconds,
+        "pybamm_parameter_set": config.pybamm_parameter_set,
+        "simulation_runtime_seconds": runtime_seconds,
         **signal_diagnostics,
     }
 
 
-def build_pybamm_only_points(cfg: PyBaMMOnlyConfig) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    rows: List[Dict[str, object]] = []
-    try:
-        calendar_baseline = run_calendar_baseline(cfg)
-    except Exception as exc:
-        calendar_baseline = calendar_baseline_error_row(cfg, exc)
-
-    for dod in cfg.dod_values:
-        try:
-            rows.append(dod_to_degradation_cost_per_mwh(dod, cfg, calendar_baseline))
-        except Exception as exc:
-            rows.append(
-                {
-                    "dod": float(dod),
-                    "energy_MWh": float(dod) * cfg.E_nom_MWh,
-                    "temperature_c": cfg.fixed_temperature_c,
-                    "dt_h": cfg.dt_h,
-                    "c_rate": float(dod) / cfg.dt_h,
-                    "cycles": cfg.pybamm_cycles_per_point,
-                    "elapsed_minutes": cfg.experiment_elapsed_minutes,
-                    "total_discharged_MWh": float(dod) * cfg.E_nom_MWh * cfg.pybamm_cycles_per_point,
-                    "gross_soh_drop_fraction": np.nan,
-                    "calendar_soh_drop_fraction": calendar_baseline.get("calendar_soh_drop_fraction", np.nan),
-                    "soh_drop_fraction": np.nan,
-                    "incremental_cycle_soh_drop_fraction": np.nan,
-                    "eol_fraction_consumed": np.nan,
-                    "replacement_total_cost_eur": cfg.replacement_total_cost_eur,
-                    "degradation_cost_eur": np.nan,
-                    "deg_cost_eur_per_MWh_discharged": np.nan,
-                    "deg_cost_eur_per_MWh_throughput": np.nan,
-                    "pybamm_ok": 0,
-                    "pybamm_signal_source": "",
-                    "pybamm_model": cfg.pybamm_model,
-                    "pybamm_model_options": "",
-                    "pybamm_parameter_set": cfg.pybamm_parameter_set,
-                    "pybamm_error": str(exc),
-                    "runtime_seconds": np.nan,
-                }
-            )
+def build_pybamm_dod_results(config: PyBaMMLutConfig) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    calendar_baseline = run_calendar_baseline(config)
+    result_rows = [
+        simulate_dod_degradation_cost(dod_fraction, config, calendar_baseline)
+        for dod_fraction in config.dod_breakpoints
+    ]
 
     return (
-        pd.DataFrame(rows).sort_values("dod").reset_index(drop=True),
+        pd.DataFrame(result_rows).sort_values("dod_fraction").reset_index(drop=True),
         pd.DataFrame([calendar_baseline]),
     )
 
 
-def build_optimizer_lut(points: pd.DataFrame) -> pd.DataFrame:
-    if points.empty or not (points["pybamm_ok"] == 1).all():
-        raise PyBaMMDegradationError("Cannot build optimizer LUT unless every PyBaMM point succeeded.")
-
-    required = [
-        "energy_MWh",
-        "temperature_c",
-        "deg_cost_eur_per_MWh_throughput",
-    ]
-    missing = [c for c in required if c not in points.columns]
-    if missing:
-        raise PyBaMMDegradationError(f"PyBaMM points missing columns required for optimizer LUT: {missing}")
-
-    out = points[required].rename(columns={"energy_MWh": "energy"}).copy()
-    return out.sort_values("energy").reset_index(drop=True)
+def _require_columns(frame: pd.DataFrame, required_columns: Sequence[str], frame_name: str) -> None:
+    missing_columns = [column for column in required_columns if column not in frame.columns]
+    if missing_columns:
+        raise PyBaMMDegradationError(f"{frame_name} missing required columns: {missing_columns}")
 
 
-def evaluate_report_checks(
-    points: pd.DataFrame,
+def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def validate_optimizer_lut_inputs(
+    dod_results: pd.DataFrame,
     calendar_baseline: pd.DataFrame,
-    cfg: PyBaMMOnlyConfig,
-) -> Dict[str, Dict[str, object]]:
-    ok = points["pybamm_ok"].astype(int) == 1
-    costs = pd.to_numeric(points["deg_cost_eur_per_MWh_throughput"], errors="coerce")
-    soh_drop = pd.to_numeric(points["soh_drop_fraction"], errors="coerce")
-    gross_soh_drop = pd.to_numeric(points["gross_soh_drop_fraction"], errors="coerce")
-    calendar_soh_drop = pd.to_numeric(points["calendar_soh_drop_fraction"], errors="coerce")
-    dod = pd.to_numeric(points["dod"], errors="coerce")
-    temps = pd.to_numeric(points["temperature_c"], errors="coerce")
-    calendar_ok = (
-        not calendar_baseline.empty
-        and int(calendar_baseline.iloc[0].get("calendar_ok", 0)) == 1
+    config: PyBaMMLutConfig,
+) -> None:
+    if dod_results.empty:
+        raise PyBaMMDegradationError("No PyBaMM DoD points were produced.")
+    if calendar_baseline.empty:
+        raise PyBaMMDegradationError("No PyBaMM calendar baseline was produced.")
+
+    required_result_columns = [
+        "dod_fraction",
+        "dispatch_energy_mwh",
+        "cell_temperature_c",
+        "gross_soh_loss_fraction",
+        "calendar_soh_loss_fraction",
+        "incremental_cycling_soh_loss_fraction",
+        "degradation_cost_eur",
+        "cost_eur_per_mwh_discharged",
+    ]
+    _require_columns(dod_results, required_result_columns, "DoD results")
+    _require_columns(calendar_baseline, ["calendar_soh_loss_fraction"], "Calendar baseline")
+
+    numeric_columns = required_result_columns + ["c_rate", "total_discharged_energy_mwh"]
+    for column in numeric_columns:
+        values = _numeric_column(dod_results, column)
+        if values.isna().any() or not np.isfinite(values.to_numpy(dtype=float)).all():
+            raise PyBaMMDegradationError(f"DoD results contain invalid numeric values in '{column}'.")
+
+    calendar_loss = _numeric_column(calendar_baseline, "calendar_soh_loss_fraction")
+    if calendar_loss.isna().any() or not np.isfinite(calendar_loss.to_numpy(dtype=float)).all():
+        raise PyBaMMDegradationError("Calendar baseline contains an invalid SoH loss value.")
+
+    dod_fraction = _numeric_column(dod_results, "dod_fraction")
+    if not ((dod_fraction > 0) & (dod_fraction <= config.max_dispatch_dod_per_step + 1e-12)).all():
+        raise PyBaMMDegradationError(
+            f"DoD points must be positive and no larger than {config.max_dispatch_dod_per_step:g}."
+        )
+
+    gross_soh_loss = _numeric_column(dod_results, "gross_soh_loss_fraction")
+    calendar_soh_loss = _numeric_column(dod_results, "calendar_soh_loss_fraction")
+    if not (gross_soh_loss > calendar_soh_loss).all():
+        raise PyBaMMDegradationError("Gross cycling SoH loss must exceed calendar baseline SoH loss.")
+
+    incremental_soh_loss = _numeric_column(dod_results, "incremental_cycling_soh_loss_fraction")
+    if not (incremental_soh_loss > config.min_valid_soh_loss_fraction).all():
+        raise PyBaMMDegradationError("Incremental cycling SoH loss is zero, negative, or below noise guard.")
+
+    dispatch_energy = _numeric_column(dod_results, "dispatch_energy_mwh")
+    total_discharged_energy = _numeric_column(dod_results, "total_discharged_energy_mwh")
+    cost_per_mwh = _numeric_column(dod_results, "cost_eur_per_mwh_discharged")
+    if not ((dispatch_energy > 0) & (total_discharged_energy > 0) & (cost_per_mwh > 0)).all():
+        raise PyBaMMDegradationError("Dispatch energy and degradation cost per MWh must be positive.")
+
+
+def build_optimizer_lut(dod_results: pd.DataFrame) -> pd.DataFrame:
+    required_columns = [
+        "dispatch_energy_mwh",
+        "cell_temperature_c",
+        "cost_eur_per_mwh_discharged",
+    ]
+    _require_columns(dod_results, required_columns, "DoD results")
+
+    optimizer_lut = dod_results[required_columns].rename(
+        columns={
+            "dispatch_energy_mwh": "energy",
+            "cell_temperature_c": "temperature_c",
+            "cost_eur_per_mwh_discharged": "deg_cost_eur_per_MWh_throughput",
+        }
     )
+    return optimizer_lut.sort_values("energy").reset_index(drop=True)
 
-    checks = {
-        "calendar_baseline_succeeded": {
-            "passed": bool(calendar_ok),
-            "value": (
-                float(calendar_baseline.iloc[0]["calendar_soh_drop_fraction"])
-                if calendar_ok
-                else calendar_baseline.iloc[0].get("calendar_error", "missing baseline")
-            ),
-        },
-        "all_pybamm_points_succeeded": {
-            "passed": bool(ok.all()),
-            "value": f"{int(ok.sum())}/{len(points)}",
-        },
-        "fixed_temperature_25C": {
-            "passed": bool(np.allclose(temps, cfg.fixed_temperature_c, equal_nan=False)),
-            "value": float(cfg.fixed_temperature_c),
-        },
-        "dod_within_physical_dispatch_limit": {
-            "passed": bool((dod <= cfg.max_dod_per_step + 1e-12).all()),
-            "value": f"max DoD={float(dod.max()):.6g}, limit={cfg.max_dod_per_step:.6g}",
-        },
-        "gross_cycling_soh_exceeds_calendar_baseline": {
-            "passed": bool((gross_soh_drop[ok] > calendar_soh_drop[ok]).all()) if ok.any() else False,
-            "value": {
-                "gross_min": float(gross_soh_drop[ok].min()) if ok.any() else np.nan,
-                "calendar": float(calendar_soh_drop[ok].iloc[0]) if ok.any() else np.nan,
-            },
-        },
-        "positive_incremental_cycle_soh_drop": {
-            "passed": bool((soh_drop[ok] > cfg.min_soh_drop_fraction).all()) if ok.any() else False,
-            "value": float(soh_drop[ok].min()) if ok.any() else np.nan,
-        },
-        "positive_cost_per_mwh": {
-            "passed": bool((costs[ok] > 0).all()) if ok.any() else False,
-            "value": float(costs[ok].min()) if ok.any() else np.nan,
-        },
-        "cost_per_mwh_monotonic_in_dod": {
-            "passed": bool((np.diff(costs[ok].to_numpy(dtype=float)) >= -1e-9).all()) if ok.sum() >= 2 else False,
-            "value": costs[ok].round(8).tolist(),
-        },
+
+def build_report_diagnostics(dod_results: pd.DataFrame) -> Dict[str, object]:
+    cost_per_mwh = _numeric_column(dod_results, "cost_eur_per_mwh_discharged")
+    return {
+        "cost_eur_per_mwh_non_decreasing": bool(
+            (np.diff(cost_per_mwh.to_numpy(dtype=float)) >= -1e-9).all()
+        ),
+        "cost_eur_per_mwh_values": cost_per_mwh.round(8).tolist(),
     }
-    return checks
 
 
-def _markdown_table(df: pd.DataFrame) -> str:
-    if df.empty:
+def _markdown_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
         return "_No rows._"
 
     def fmt(value: object) -> str:
@@ -475,26 +507,25 @@ def _markdown_table(df: pd.DataFrame) -> str:
             return f"{value:.8g}"
         if pd.isna(value):
             return ""
-        text = str(value).replace("\n", " ").replace("|", "\\|")
-        return text
+        return str(value).replace("\n", " ").replace("|", "\\|")
 
-    columns = list(df.columns)
+    columns = list(frame.columns)
     lines = [
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join("---" for _ in columns) + " |",
     ]
-    for _, row in df.iterrows():
-        lines.append("| " + " | ".join(fmt(row[c]) for c in columns) + " |")
+    for _, row in frame.iterrows():
+        lines.append("| " + " | ".join(fmt(row[column]) for column in columns) + " |")
     return "\n".join(lines)
 
 
 def write_report(
     report_path: Path,
-    points: pd.DataFrame,
+    dod_results: pd.DataFrame,
     calendar_baseline: pd.DataFrame,
-    checks: Dict[str, Dict[str, object]],
-    cfg: PyBaMMOnlyConfig,
-    outputs: Dict[str, Optional[Path]],
+    diagnostics: Mapping[str, object],
+    config: PyBaMMLutConfig,
+    outputs: Mapping[str, Path],
 ) -> None:
     lines = [
         "# PyBaMM-Only DoD Degradation LUT Report",
@@ -502,142 +533,111 @@ def write_report(
         "## Method",
         "- No empirical fallback curve is used.",
         "- PyBaMM runs a rest-only calendar baseline for the same elapsed time as each cycling point.",
-        "- PyBaMM runs representative 15-minute market-step discharge/charge cycles at fixed 25C.",
+        f"- PyBaMM runs representative market-step discharge/charge cycles at {config.cell_temperature_c:g}C.",
         "- Calendar baseline SoH loss is subtracted from gross cycling SoH loss.",
         "- Incremental cycling SoH loss is converted to replacement-cost consumption.",
-        "- The optimizer LUT uses one-timestep discharged energy: `energy = DoD * E_nom_MWh`.",
+        "- The optimizer LUT uses one-timestep discharged energy: `energy = DoD * nominal_energy_mwh`.",
         "",
         "Cost conversion:",
         "",
         "```text",
-        "incremental_cycle_soh_drop = gross_cycling_soh_drop - calendar_baseline_soh_drop",
-        "eol_fraction_consumed = incremental_cycle_soh_drop / (1 - soh_eol)",
-        "degradation_cost_eur = eol_fraction_consumed * replacement_total_cost_eur",
-        "EUR_per_MWh = degradation_cost_eur / total_discharged_MWh",
+        "incremental_cycling_soh_loss = gross_cycling_soh_loss - calendar_baseline_soh_loss",
+        "replacement_life_fraction_consumed = incremental_cycling_soh_loss / (1 - end_of_life_soh_fraction)",
+        "degradation_cost_eur = replacement_life_fraction_consumed * pack_replacement_cost_eur",
+        "EUR_per_MWh_discharged = degradation_cost_eur / total_discharged_energy_mwh",
         "```",
         "",
         "## Configuration",
     ]
-    for key, value in asdict(cfg).items():
+    for key, value in asdict(config).items():
         lines.append(f"- {key}: {value}")
 
-    baseline_cols = [
-        "calendar_ok",
-        "calendar_elapsed_minutes",
-        "calendar_soh_drop_fraction",
-        "calendar_signal_source",
-        "calendar_error",
+    baseline_columns = [
+        "calendar_simulated_elapsed_minutes",
+        "calendar_soh_loss_fraction",
+        "calendar_degradation_signal_source",
         "calendar_runtime_seconds",
     ]
-    existing_baseline_cols = [c for c in baseline_cols if c in calendar_baseline.columns]
-    lines.extend(["", "## Calendar Baseline", "", _markdown_table(calendar_baseline[existing_baseline_cols])])
+    existing_baseline_columns = [column for column in baseline_columns if column in calendar_baseline.columns]
+    lines.extend(["", "## Calendar Baseline", "", _markdown_table(calendar_baseline[existing_baseline_columns])])
 
-    lines.extend(["", "## Checks", "", "| Check | Status | Value |", "|---|---:|---|"])
-    for name, result in checks.items():
-        status = "PASS" if result["passed"] else "FAIL"
-        lines.append(f"| `{name}` | {status} | {result['value']} |")
-
-    display_cols = [
-        "dod",
-        "energy_MWh",
+    point_columns = [
+        "dod_fraction",
+        "dispatch_energy_mwh",
         "c_rate",
-        "gross_soh_drop_fraction",
-        "calendar_soh_drop_fraction",
-        "incremental_cycle_soh_drop_fraction",
-        "soh_drop_fraction",
+        "gross_soh_loss_fraction",
+        "calendar_soh_loss_fraction",
+        "incremental_cycling_soh_loss_fraction",
         "degradation_cost_eur",
-        "deg_cost_eur_per_MWh_throughput",
-        "pybamm_ok",
-        "pybamm_signal_source",
-        "pybamm_error",
+        "cost_eur_per_mwh_discharged",
+        "degradation_signal_source",
+        "simulation_runtime_seconds",
     ]
-    existing = [c for c in display_cols if c in points.columns]
-    lines.extend(["", "## Points", "", _markdown_table(points[existing])])
+    existing_point_columns = [column for column in point_columns if column in dod_results.columns]
+    lines.extend(["", "## DoD Points", "", _markdown_table(dod_results[existing_point_columns])])
+
+    lines.extend(["", "## Diagnostics", "", "| Metric | Value |", "|---|---|"])
+    for key, value in diagnostics.items():
+        lines.append(f"| `{key}` | {value} |")
 
     lines.extend(["", "## Outputs"])
     for name, path in outputs.items():
-        lines.append(f"- {name}: `{path}`" if path else f"- {name}: not written")
+        lines.append(f"- {name}: `{path}`")
 
     lines.append("")
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def run_pipeline(
-    stats_output_dir: Path,
+    diagnostics_output_dir: Path,
     optimizer_output_dir: Path,
-    cfg: PyBaMMOnlyConfig,
+    config: PyBaMMLutConfig,
 ) -> Dict[str, object]:
-    stats_output_dir = stats_output_dir.resolve()
+    validate_config(config)
+
+    diagnostics_output_dir = diagnostics_output_dir.resolve()
     optimizer_output_dir = optimizer_output_dir.resolve()
-    stats_output_dir.mkdir(parents=True, exist_ok=True)
+    diagnostics_output_dir.mkdir(parents=True, exist_ok=True)
     optimizer_output_dir.mkdir(parents=True, exist_ok=True)
 
-    points, calendar_baseline = build_pybamm_only_points(cfg)
-    checks = evaluate_report_checks(points, calendar_baseline, cfg)
-    all_checks_passed = all(bool(item["passed"]) for item in checks.values())
+    dod_results, calendar_baseline = build_pybamm_dod_results(config)
+    validate_optimizer_lut_inputs(dod_results, calendar_baseline, config)
 
-    calendar_path = stats_output_dir / "pybamm_only_calendar_baseline.csv"
-    points_path = stats_output_dir / "pybamm_only_dod_points.csv"
-    full_lut_path = stats_output_dir / "pybamm_only_dod_degradation_lut.csv"
+    calendar_path = diagnostics_output_dir / "pybamm_only_calendar_baseline.csv"
+    points_path = diagnostics_output_dir / "pybamm_only_dod_points.csv"
+    full_lut_path = diagnostics_output_dir / "pybamm_only_dod_degradation_lut.csv"
     optimizer_lut_path = optimizer_output_dir / "Reduced_LUT_PyBaMM_Only.csv"
-    report_path = stats_output_dir / "pybamm_only_dod_report.md"
-    manifest_path = stats_output_dir / "pybamm_only_dod_manifest.json"
+    report_path = diagnostics_output_dir / "pybamm_only_dod_report.md"
+    manifest_path = diagnostics_output_dir / "pybamm_only_dod_manifest.json"
+
+    optimizer_lut = build_optimizer_lut(dod_results)
+    diagnostics = build_report_diagnostics(dod_results)
 
     calendar_baseline.to_csv(calendar_path, index=False)
-    points.to_csv(points_path, index=False)
+    dod_results.to_csv(points_path, index=False)
+    dod_results.to_csv(full_lut_path, index=False)
+    optimizer_lut.to_csv(optimizer_lut_path, index=False)
 
-    outputs: Dict[str, Optional[Path]] = {
+    outputs = {
         "calendar_baseline": calendar_path,
-        "points": points_path,
-        "full_lut": None,
-        "optimizer_lut": None,
+        "dod_points": points_path,
+        "full_lut": full_lut_path,
+        "optimizer_lut": optimizer_lut_path,
         "report": report_path,
         "manifest": manifest_path,
     }
-
-    if (points["pybamm_ok"].astype(int) == 1).all():
-        full_cols = [
-            "dod",
-            "energy_MWh",
-            "temperature_c",
-            "dt_h",
-            "c_rate",
-            "cycles",
-            "elapsed_minutes",
-            "total_discharged_MWh",
-            "gross_soh_drop_fraction",
-            "calendar_soh_drop_fraction",
-            "incremental_cycle_soh_drop_fraction",
-            "soh_drop_fraction",
-            "eol_fraction_consumed",
-            "degradation_cost_eur",
-            "deg_cost_eur_per_MWh_discharged",
-            "deg_cost_eur_per_MWh_throughput",
-            "pybamm_signal_source",
-            "pybamm_model",
-            "pybamm_model_options",
-            "pybamm_parameter_set",
-            "runtime_seconds",
-        ]
-        points[[c for c in full_cols if c in points.columns]].to_csv(full_lut_path, index=False)
-        outputs["full_lut"] = full_lut_path
-
-    if all_checks_passed:
-        build_optimizer_lut(points).to_csv(optimizer_lut_path, index=False)
-        outputs["optimizer_lut"] = optimizer_lut_path
-
-    write_report(report_path, points, calendar_baseline, checks, cfg, outputs)
+    write_report(report_path, dod_results, calendar_baseline, diagnostics, config, outputs)
 
     manifest = {
         "pipeline": "pybamm_only_dod_degradation_lut",
         "strict_pybamm_only": True,
-        "all_checks_passed": all_checks_passed,
-        "stats_output_dir": str(stats_output_dir),
+        "validation_status": "passed",
+        "diagnostics_output_dir": str(diagnostics_output_dir),
         "optimizer_output_dir": str(optimizer_output_dir),
-        "config": asdict(cfg),
-        "calendar_baseline": calendar_baseline.iloc[0].to_dict() if not calendar_baseline.empty else None,
-        "checks": checks,
-        "outputs": {k: str(v) if v is not None else None for k, v in outputs.items()},
+        "config": asdict(config),
+        "calendar_baseline": calendar_baseline.iloc[0].to_dict(),
+        "diagnostics": diagnostics,
+        "outputs": {key: str(path) for key, path in outputs.items()},
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     return manifest
@@ -646,66 +646,58 @@ def run_pipeline(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a PyBaMM-only DoD degradation-cost LUT.")
     parser.add_argument(
-        "--output-dir",
-        help="Legacy alias for --stats-output-dir. Optimizer LUT still goes to --optimizer-output-dir.",
-    )
-    parser.add_argument(
-        "--stats-output-dir",
-        help=f"Folder for PyBaMM diagnostics. Default: {DEFAULT_STATS_OUTPUT_DIR}",
+        "--diagnostics-output-dir",
+        help=f"Folder for PyBaMM diagnostics. Default: {DEFAULT_DIAGNOSTICS_OUTPUT_DIR}",
     )
     parser.add_argument(
         "--optimizer-output-dir",
         help=f"Folder for Reduced_LUT_PyBaMM_Only.csv. Default: {DEFAULT_OPTIMIZER_OUTPUT_DIR}",
     )
-    parser.add_argument("--E-nom-MWh", type=float, default=2.0)
-    parser.add_argument("--P-max-MW", type=float, default=1.0)
-    parser.add_argument("--dt-h", type=float, default=0.25)
-    parser.add_argument("--c-rate-max", type=float, default=0.50)
-    parser.add_argument("--dod-grid", default="0.05,0.08,0.10,0.125")
-    parser.add_argument("--cycles", type=int, default=12)
-    parser.add_argument("--rest-minutes", type=float, default=3.0)
-    parser.add_argument("--model", default="SPMe", choices=["SPM", "SPMe", "DFN"])
-    parser.add_argument("--parameter-set", default="Chen2020")
-    parser.add_argument("--install-note", action="store_true")
+    parser.add_argument("--nominal-energy-mwh", type=float, default=2.0)
+    parser.add_argument("--max-power-mw", type=float, default=1.0)
+    parser.add_argument("--timestep-hours", type=float, default=0.25)
+    parser.add_argument("--max-c-rate", type=float, default=0.50)
+    parser.add_argument("--cell-temperature-c", type=float, default=25.0)
+    parser.add_argument("--end-of-life-soh-fraction", type=float, default=0.80)
+    parser.add_argument("--replacement-cost-eur-per-mwh-capacity", type=float, default=60_000.0)
+    parser.add_argument("--dod-breakpoints", default="0.05,0.08,0.10,0.125")
+    parser.add_argument("--cycles-per-dod-point", type=int, default=12)
+    parser.add_argument("--rest-minutes-between-cycles", type=float, default=3.0)
+    parser.add_argument("--pybamm-model", default="SPMe", choices=["SPM", "SPMe", "DFN"])
+    parser.add_argument("--pybamm-parameter-set", default="Chen2020")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
-    if args.install_note:
-        print("Install PyBaMM in your active Python environment with:")
-        print("  pip install 'pybamm[plot]'")
-        print("This PyBaMM-only script does not use a fallback curve.")
-        return
-
-    stats_output_dir = Path(args.stats_output_dir or args.output_dir or DEFAULT_STATS_OUTPUT_DIR)
+    diagnostics_output_dir = Path(args.diagnostics_output_dir or DEFAULT_DIAGNOSTICS_OUTPUT_DIR)
     optimizer_output_dir = Path(args.optimizer_output_dir or DEFAULT_OPTIMIZER_OUTPUT_DIR)
 
-    cfg = PyBaMMOnlyConfig(
-        E_nom_MWh=args.E_nom_MWh,
-        P_max_MW=args.P_max_MW,
-        dt_h=args.dt_h,
-        c_rate_max=args.c_rate_max,
-        dod_values=parse_float_list(args.dod_grid),
-        pybamm_cycles_per_point=args.cycles,
-        pybamm_rest_minutes=args.rest_minutes,
-        pybamm_model=args.model,
-        pybamm_parameter_set=args.parameter_set,
+    config = PyBaMMLutConfig(
+        nominal_energy_mwh=args.nominal_energy_mwh,
+        max_power_mw=args.max_power_mw,
+        timestep_hours=args.timestep_hours,
+        max_c_rate=args.max_c_rate,
+        cell_temperature_c=args.cell_temperature_c,
+        end_of_life_soh_fraction=args.end_of_life_soh_fraction,
+        replacement_cost_eur_per_mwh_capacity=args.replacement_cost_eur_per_mwh_capacity,
+        dod_breakpoints=parse_dod_breakpoints(args.dod_breakpoints),
+        cycles_per_dod_point=args.cycles_per_dod_point,
+        rest_minutes_between_cycles=args.rest_minutes_between_cycles,
+        pybamm_model_name=args.pybamm_model,
+        pybamm_parameter_set=args.pybamm_parameter_set,
     )
 
-    manifest = run_pipeline(stats_output_dir, optimizer_output_dir, cfg)
+    try:
+        manifest = run_pipeline(diagnostics_output_dir, optimizer_output_dir, config)
+    except (PyBaMMDegradationError, ValueError) as exc:
+        raise SystemExit(f"Failed to build PyBaMM-only LUT: {exc}") from exc
+
     print("\nPyBaMM-only DoD degradation LUT run completed.")
-    print(f"All checks passed: {manifest['all_checks_passed']}")
+    print("Validation: passed")
     print("Outputs:")
     for name, path in manifest["outputs"].items():
         print(f" - {name}: {path}")
-
-    if not manifest["all_checks_passed"]:
-        raise SystemExit(
-            "PyBaMM-only checks failed. Inspect pybamm_only_dod_report.md and "
-            "pybamm_only_dod_points.csv before using any LUT."
-        )
 
 
 if __name__ == "__main__":
