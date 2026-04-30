@@ -32,21 +32,37 @@ def values_by_step(variables: dict, periods: int) -> np.ndarray:
     return np.array([pl.value(variables[t]) or 0.0 for t in range(periods)], dtype=float)
 
 
-def build_schedule(
+def build_schedule_from_arrays(
     prices: pd.Series,
-    p_buy: dict,
-    p_sell: dict,
-    soc: dict,
-    degradation_cost: dict,
+    p_buy_mw: np.ndarray,
+    p_sell_mw: np.ndarray,
+    soc_mwh: np.ndarray,
+    degradation_cost_eur: np.ndarray,
     test_params: dict,
 ) -> pd.DataFrame:
     periods = len(prices)
-    p_buy_mw = values_by_step(p_buy, periods)
-    p_sell_mw = values_by_step(p_sell, periods)
-    soc_mwh = values_by_step(soc, periods)
-    degradation_cost_eur = values_by_step(degradation_cost, periods)
-    dt = test_params["dt"]
+    p_buy_mw = np.asarray(p_buy_mw, dtype=float)
+    p_sell_mw = np.asarray(p_sell_mw, dtype=float)
+    soc_mwh = np.asarray(soc_mwh, dtype=float)
+    degradation_cost_eur = np.asarray(degradation_cost_eur, dtype=float)
+    expected_shapes = {
+        "p_buy_mw": p_buy_mw,
+        "p_sell_mw": p_sell_mw,
+        "soc_mwh": soc_mwh,
+        "degradation_cost_eur": degradation_cost_eur,
+    }
+    invalid = [
+        name
+        for name, values in expected_shapes.items()
+        if values.shape != (periods,)
+    ]
+    if invalid:
+        raise ValueError(
+            "Schedule arrays must match the number of price periods. "
+            f"Invalid arrays: {', '.join(invalid)}"
+        )
 
+    dt = test_params["dt"]
     schedule = pd.DataFrame(
         {
             "timestamp": prices.index,
@@ -78,6 +94,29 @@ def build_schedule(
         default="idle",
     )
     return schedule
+
+
+def build_schedule(
+    prices: pd.Series,
+    p_buy: dict,
+    p_sell: dict,
+    soc: dict,
+    degradation_cost: dict,
+    test_params: dict,
+) -> pd.DataFrame:
+    periods = len(prices)
+    p_buy_mw = values_by_step(p_buy, periods)
+    p_sell_mw = values_by_step(p_sell, periods)
+    soc_mwh = values_by_step(soc, periods)
+    degradation_cost_eur = values_by_step(degradation_cost, periods)
+    return build_schedule_from_arrays(
+        prices=prices,
+        p_buy_mw=p_buy_mw,
+        p_sell_mw=p_sell_mw,
+        soc_mwh=soc_mwh,
+        degradation_cost_eur=degradation_cost_eur,
+        test_params=test_params,
+    )
 
 
 def summarize(
@@ -124,11 +163,16 @@ def summarize(
     }
 
 
-def validate_schedule(schedule: pd.DataFrame, summary: dict, test_params: dict) -> None:
+def validate_schedule(
+    schedule: pd.DataFrame,
+    summary: dict,
+    test_params: dict,
+    require_optimal: bool = True,
+) -> None:
     tolerance = 1e-5
     errors = []
 
-    if summary["solver_status"] != "Optimal":
+    if require_optimal and summary["solver_status"] != "Optimal":
         errors.append(f"solver status is {summary['solver_status']}, expected Optimal")
 
     simultaneous = (schedule["p_buy_mw"] > tolerance) & (schedule["p_sell_mw"] > tolerance)

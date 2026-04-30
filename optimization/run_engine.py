@@ -31,6 +31,11 @@ from optimization.backtest_utils import (
     summarize,
     validate_schedule,
 )
+from optimization.benchmarking import (
+    BENCHMARK_LABELS,
+    normalize_benchmark_id,
+    run_benchmark_model,
+)
 from optimization.backtesting_loaders import (
     DEFAULT_DEGRADATION_LUT_PATH,
     DEFAULT_PYBAMM_ONLY_LUT_PATH,
@@ -61,6 +66,11 @@ PYBAMM_ONLY_LUT_CSV = DEFAULT_PYBAMM_ONLY_LUT_PATH
 
 SOLVER_MSG = False
 PROGRESS_EVERY = 25  # Used only for annual runs. Set 0 to disable progress prints.
+
+RUN_BENCHMARKS = True
+BENCHMARK_MODELS = ("perfect", "naive")
+NAIVE_ALPHA_FACTOR = 0.05
+NAIVE_MARGIN = 0.05
 
 INSTALLED_CAPACITY_MW = 50.0
 BASE_MODULE_MW = float(BASE_PARAMS["p_max"])
@@ -145,6 +155,10 @@ def add_park_scale_up_summary(summary: dict, test_params: dict, scale_factor: fl
     out["park_degradation_cost_eur"] = float(out["degradation_cost_eur"] * scale_factor)
     out["park_buy_energy_mwh"] = float(out["buy_energy_mwh"] * scale_factor)
     out["park_sell_energy_mwh"] = float(out["sell_energy_mwh"] * scale_factor)
+    if "total_throughput_mwh" in out:
+        out["park_total_throughput_mwh"] = float(
+            out["total_throughput_mwh"] * scale_factor
+        )
     return out
 
 
@@ -191,6 +205,180 @@ def optimize_prices(
     schedule = add_park_scale_up_columns(schedule, scale_factor)
     summary = add_park_scale_up_summary(summary, test_params, scale_factor)
     return schedule, summary
+
+
+def selected_benchmark_ids() -> list[str]:
+    if not RUN_BENCHMARKS:
+        return []
+
+    selected = []
+    for model_id in BENCHMARK_MODELS:
+        normalized = normalize_benchmark_id(model_id)
+        if normalized not in BENCHMARK_LABELS:
+            raise ValueError(f"Unknown benchmark model configured: {model_id}")
+        if normalized not in selected:
+            selected.append(normalized)
+    return selected
+
+
+def scale_schedule_and_summary(
+    schedule: pd.DataFrame,
+    summary: dict,
+    test_params: dict,
+) -> tuple[pd.DataFrame, dict]:
+    scale_factor = validate_scale_settings(test_params)
+    return (
+        add_park_scale_up_columns(schedule, scale_factor),
+        add_park_scale_up_summary(summary, test_params, scale_factor),
+    )
+
+
+def run_daily_benchmarks(prices: pd.Series, test_params: dict) -> list[dict]:
+    results = []
+    for model_id in selected_benchmark_ids():
+        schedule, summary = run_benchmark_model(
+            model_id=model_id,
+            prices=prices,
+            test_params=test_params,
+            solver_msg=SOLVER_MSG,
+            naive_alpha_factor=NAIVE_ALPHA_FACTOR,
+            naive_margin=NAIVE_MARGIN,
+        )
+        summary["price_start"] = str(prices.index.min())
+        summary["price_end"] = str(prices.index.max())
+        schedule, summary = scale_schedule_and_summary(schedule, summary, test_params)
+        results.append(
+            {
+                "model_id": model_id,
+                "model_label": summary["model_label"],
+                "schedule": schedule,
+                "summary": summary,
+            }
+        )
+    return results
+
+
+def comparison_row(
+    model_id: str,
+    model_label: str,
+    summary: dict,
+    base_summary: dict,
+    zero_degradation_benchmark: bool,
+) -> dict:
+    net_profit = float(summary.get("net_profit_eur", 0.0))
+    park_net_profit = float(summary.get("park_net_profit_eur", net_profit))
+    base_net_profit = float(base_summary.get("net_profit_eur", 0.0))
+    base_park_net_profit = float(
+        base_summary.get("park_net_profit_eur", base_net_profit)
+    )
+    return {
+        "model_id": model_id,
+        "model_label": model_label,
+        "solver_status": str(summary.get("solver_status", "Unknown")),
+        "zero_degradation_benchmark": bool(zero_degradation_benchmark),
+        "net_profit_eur": net_profit,
+        "park_net_profit_eur": park_net_profit,
+        "delta_net_profit_eur": net_profit - base_net_profit,
+        "park_delta_net_profit_eur": park_net_profit - base_park_net_profit,
+        "gross_revenue_eur": float(summary.get("gross_revenue_eur", 0.0)),
+        "gross_purchase_eur": float(summary.get("gross_purchase_eur", 0.0)),
+        "degradation_cost_eur": float(summary.get("degradation_cost_eur", 0.0)),
+        "buy_energy_mwh": float(summary.get("buy_energy_mwh", 0.0)),
+        "sell_energy_mwh": float(summary.get("sell_energy_mwh", 0.0)),
+        "equivalent_discharge_cycles": float(
+            summary.get("equivalent_discharge_cycles", 0.0)
+        ),
+        "final_soc_pct": float(summary.get("final_soc_pct", 0.0)),
+        "degradation_cost_source": str(summary.get("degradation_cost_source", "")),
+    }
+
+
+def build_benchmark_comparison(
+    base_summary: dict,
+    benchmark_results: list[dict],
+) -> pd.DataFrame:
+    rows = [
+        comparison_row(
+            model_id="degradation_aware_milp",
+            model_label="Degradation-aware MILP (PyBaMM/LUT cost)",
+            summary=base_summary,
+            base_summary=base_summary,
+            zero_degradation_benchmark=False,
+        )
+    ]
+    for result in benchmark_results:
+        rows.append(
+            comparison_row(
+                model_id=result["model_id"],
+                model_label=result["model_label"],
+                summary=result["summary"],
+                base_summary=base_summary,
+                zero_degradation_benchmark=True,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def write_benchmark_outputs(
+    benchmark_results: list[dict],
+    comparison: pd.DataFrame | None,
+    output_dir: Path,
+    output_slug: str,
+) -> tuple[list[Path], Path | None]:
+    if not benchmark_results or comparison is None:
+        return [], None
+
+    schedule_paths = []
+    for result in benchmark_results:
+        schedule_path = (
+            output_dir / f"{output_slug}_{result['model_id']}_benchmark_schedule.csv"
+        )
+        result["schedule"].to_csv(schedule_path, index=False)
+        schedule_paths.append(schedule_path)
+
+    comparison_path = output_dir / f"{output_slug}_benchmark_comparison.csv"
+    comparison.to_csv(comparison_path, index=False)
+    return schedule_paths, comparison_path
+
+
+def format_report_value(value: float, digits: int = 2) -> str:
+    return f"{float(value):,.{digits}f}"
+
+
+def benchmark_comparison_report_lines(comparison: pd.DataFrame | None) -> list[str]:
+    if comparison is None or comparison.empty:
+        return []
+
+    lines = [
+        "",
+        "## Benchmark Comparison",
+        "",
+        "Rows marked as zero-degradation benchmarks intentionally report zero degradation cost.",
+        "",
+        (
+            "| Model | Status | Park net EUR | Park delta EUR | "
+            "Net EUR | Revenue EUR | Purchase EUR | Degradation EUR | "
+            "Bought MWh | Sold MWh | Cycles | Final SoC % |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in comparison.itertuples(index=False):
+        lines.append(
+            "| "
+            f"{row.model_label} | "
+            f"{row.solver_status} | "
+            f"{format_report_value(row.park_net_profit_eur)} | "
+            f"{format_report_value(row.park_delta_net_profit_eur)} | "
+            f"{format_report_value(row.net_profit_eur)} | "
+            f"{format_report_value(row.gross_revenue_eur)} | "
+            f"{format_report_value(row.gross_purchase_eur)} | "
+            f"{format_report_value(row.degradation_cost_eur)} | "
+            f"{format_report_value(row.buy_energy_mwh, 3)} | "
+            f"{format_report_value(row.sell_energy_mwh, 3)} | "
+            f"{format_report_value(row.equivalent_discharge_cycles, 3)} | "
+            f"{format_report_value(row.final_soc_pct * 100.0, 1)} |"
+        )
+    return lines
 
 
 def shade_operations(
@@ -286,6 +474,9 @@ def write_daily_report(
     schedule_path: Path,
     plot_path: Path,
     report_path: Path,
+    benchmark_comparison: pd.DataFrame | None = None,
+    benchmark_comparison_path: Path | None = None,
+    benchmark_schedule_paths: list[Path] | None = None,
 ) -> None:
     lines = [
         "# Daily Battery Optimization Backtest",
@@ -293,9 +484,15 @@ def write_daily_report(
         "## Outputs",
         f"- Schedule CSV: `{schedule_path.name}`",
         f"- Visual output: `{plot_path.name}`",
-        "",
-        "## Summary",
     ]
+    if benchmark_comparison_path is not None:
+        lines.append(f"- Benchmark comparison CSV: `{benchmark_comparison_path.name}`")
+    if benchmark_schedule_paths:
+        joined = ", ".join(f"`{path.name}`" for path in benchmark_schedule_paths)
+        lines.append(f"- Benchmark schedule CSVs: {joined}")
+
+    lines.extend(benchmark_comparison_report_lines(benchmark_comparison))
+    lines.extend(["", "## Summary"])
     for key, value in summary.items():
         if isinstance(value, float):
             lines.append(f"- {key}: {value:.6f}")
@@ -371,10 +568,13 @@ def build_monthly_stats(schedule: pd.DataFrame, test_params: dict) -> pd.DataFra
     return add_park_scale_up_metadata(monthly, test_params)
 
 
-def build_annual_summary(
+def summarize_annual_schedule(
     schedule: pd.DataFrame,
-    daily_stats: pd.DataFrame,
     test_params: dict,
+    year: int,
+    days: int,
+    optimal_days: int,
+    solver_status: str,
     degradation_source: str,
 ) -> dict:
     gross_revenue = float(schedule["gross_revenue_eur"].sum())
@@ -384,17 +584,19 @@ def build_annual_summary(
     buy_energy = float(schedule["buy_energy_mwh"].sum())
     sell_energy = float(schedule["sell_energy_mwh"].sum())
 
-    summary = {
-        "year": YEAR,
-        "days": int(daily_stats.shape[0]),
+    return {
+        "solver_status": solver_status,
+        "year": int(year),
+        "days": int(days),
         "intervals": int(schedule.shape[0]),
-        "optimal_days": int((daily_stats["solver_status"] == "Optimal").sum()),
+        "optimal_days": int(optimal_days),
         "gross_revenue_eur": gross_revenue,
         "gross_purchase_eur": gross_purchase,
         "degradation_cost_eur": degradation_cost,
         "net_profit_eur": net_profit,
         "buy_energy_mwh": buy_energy,
         "sell_energy_mwh": sell_energy,
+        "total_throughput_mwh": buy_energy + sell_energy,
         "equivalent_discharge_cycles": safe_divide(sell_energy, test_params["e_max"]),
         "gross_revenue_eur_per_mwh_sold": safe_divide(gross_revenue, sell_energy),
         "gross_purchase_eur_per_mwh_bought": safe_divide(gross_purchase, buy_energy),
@@ -407,6 +609,9 @@ def build_annual_summary(
         "buy_intervals": int((schedule["operation"] == "buy").sum()),
         "sell_intervals": int((schedule["operation"] == "sell").sum()),
         "idle_intervals": int((schedule["operation"] == "idle").sum()),
+        "min_soc_pct": float(schedule["soc_pct"].min()),
+        "max_soc_pct": float(schedule["soc_pct"].max()),
+        "final_soc_pct": float(schedule["soc_pct"].iloc[-1]),
         "price_min_eur_mwh": float(schedule["price_eur_mwh"].min()),
         "price_max_eur_mwh": float(schedule["price_eur_mwh"].max()),
         "price_mean_eur_mwh": float(schedule["price_eur_mwh"].mean()),
@@ -414,11 +619,122 @@ def build_annual_summary(
         "battery_capacity_mwh": float(test_params["e_max"]),
         "degradation_cost_source": degradation_source,
     }
+
+
+def build_annual_summary(
+    schedule: pd.DataFrame,
+    daily_stats: pd.DataFrame,
+    test_params: dict,
+    degradation_source: str,
+) -> dict:
+    optimal_days = int((daily_stats["solver_status"] == "Optimal").sum())
+    solver_status = "Optimal" if optimal_days == int(daily_stats.shape[0]) else "Partial"
+    summary = summarize_annual_schedule(
+        schedule=schedule,
+        test_params=test_params,
+        year=YEAR,
+        days=int(daily_stats.shape[0]),
+        optimal_days=optimal_days,
+        solver_status=solver_status,
+        degradation_source=degradation_source,
+    )
     return add_park_scale_up_summary(
         summary,
         test_params,
         validate_scale_settings(test_params),
     )
+
+
+def build_benchmark_annual_summary(
+    schedule: pd.DataFrame,
+    daily_summaries: list[dict],
+    metadata_summary: dict,
+    test_params: dict,
+    year: int,
+    days: int,
+) -> dict:
+    model_id = metadata_summary["benchmark_model"]
+    model_label = metadata_summary["model_label"]
+    if daily_summaries:
+        optimal_days = int(
+            sum(summary.get("solver_status") == "Optimal" for summary in daily_summaries)
+        )
+        solver_status = "Optimal" if optimal_days == len(daily_summaries) else "Partial"
+    else:
+        optimal_days = 0
+        solver_status = str(metadata_summary.get("solver_status", "Unknown"))
+
+    summary = summarize_annual_schedule(
+        schedule=schedule,
+        test_params=test_params,
+        year=year,
+        days=days,
+        optimal_days=optimal_days,
+        solver_status=solver_status,
+        degradation_source=metadata_summary["degradation_cost_source"],
+    )
+    summary["benchmark_model"] = model_id
+    summary["model_label"] = model_label
+    summary["zero_degradation_benchmark"] = True
+    if "naive_alpha_factor" in metadata_summary:
+        summary["naive_alpha_factor"] = metadata_summary["naive_alpha_factor"]
+        summary["naive_margin"] = metadata_summary["naive_margin"]
+    return summary
+
+
+def run_annual_benchmarks(
+    prices_year: pd.Series,
+    grouped_days: list[tuple[pd.Timestamp, pd.Series]],
+    test_params: dict,
+) -> list[dict]:
+    results = []
+    days = len(grouped_days)
+    for model_id in selected_benchmark_ids():
+        if model_id == "naive":
+            schedule, metadata_summary = run_benchmark_model(
+                model_id=model_id,
+                prices=prices_year,
+                test_params=test_params,
+                solver_msg=SOLVER_MSG,
+                naive_alpha_factor=NAIVE_ALPHA_FACTOR,
+                naive_margin=NAIVE_MARGIN,
+            )
+            daily_summaries = []
+        else:
+            schedules = []
+            daily_summaries = []
+            for _, day_prices in grouped_days:
+                day_schedule, day_summary = run_benchmark_model(
+                    model_id=model_id,
+                    prices=day_prices,
+                    test_params=test_params,
+                    solver_msg=SOLVER_MSG,
+                    naive_alpha_factor=NAIVE_ALPHA_FACTOR,
+                    naive_margin=NAIVE_MARGIN,
+                )
+                schedules.append(day_schedule)
+                daily_summaries.append(day_summary)
+            schedule = pd.concat(schedules, ignore_index=True)
+            metadata_summary = daily_summaries[0]
+
+        summary = build_benchmark_annual_summary(
+            schedule=schedule,
+            daily_summaries=daily_summaries,
+            metadata_summary=metadata_summary,
+            test_params=test_params,
+            year=YEAR,
+            days=days,
+        )
+        schedule, summary = scale_schedule_and_summary(schedule, summary, test_params)
+        results.append(
+            {
+                "model_id": model_id,
+                "model_label": summary["model_label"],
+                "schedule": schedule,
+                "summary": summary,
+            }
+        )
+    return results
 
 
 def write_annual_report(
@@ -427,6 +743,9 @@ def write_annual_report(
     daily_path: Path,
     monthly_path: Path,
     report_path: Path,
+    benchmark_comparison: pd.DataFrame | None = None,
+    benchmark_comparison_path: Path | None = None,
+    benchmark_schedule_paths: list[Path] | None = None,
 ) -> None:
     lines = [
         f"# Annual Battery Optimization Backtest {summary['year']}",
@@ -463,9 +782,15 @@ def write_annual_report(
         f"- Full schedule CSV: `{schedule_path.name}`",
         f"- Daily stats CSV: `{daily_path.name}`",
         f"- Monthly stats CSV: `{monthly_path.name}`",
-        "",
-        "## Full Summary",
     ]
+    if benchmark_comparison_path is not None:
+        lines.append(f"- Benchmark comparison CSV: `{benchmark_comparison_path.name}`")
+    if benchmark_schedule_paths:
+        joined = ", ".join(f"`{path.name}`" for path in benchmark_schedule_paths)
+        lines.append(f"- Benchmark schedule CSVs: {joined}")
+
+    lines.extend(benchmark_comparison_report_lines(benchmark_comparison))
+    lines.extend(["", "## Full Summary"])
 
     for key, value in summary.items():
         if isinstance(value, float):
@@ -504,13 +829,34 @@ def run_daily_optimization() -> None:
     summary["price_end"] = str(prices.index.max())
     summary["degradation_cost_source"] = degradation_source
 
+    benchmark_results = run_daily_benchmarks(prices, test_params)
+    benchmark_comparison = (
+        build_benchmark_comparison(summary, benchmark_results)
+        if benchmark_results
+        else None
+    )
+
     schedule_path = output_dir / f"{output_slug}_schedule.csv"
     plot_path = output_dir / f"{output_slug}_visual.png"
     report_path = output_dir / f"{output_slug}_report.md"
+    benchmark_schedule_paths, benchmark_comparison_path = write_benchmark_outputs(
+        benchmark_results,
+        benchmark_comparison,
+        output_dir,
+        output_slug,
+    )
 
     schedule.to_csv(schedule_path, index=False)
     write_daily_plot(schedule, summary, plot_path, price_source_label)
-    write_daily_report(summary, schedule_path, plot_path, report_path)
+    write_daily_report(
+        summary,
+        schedule_path,
+        plot_path,
+        report_path,
+        benchmark_comparison=benchmark_comparison,
+        benchmark_comparison_path=benchmark_comparison_path,
+        benchmark_schedule_paths=benchmark_schedule_paths,
+    )
 
     print("Daily optimization completed.")
     print(f"Date: {target_day}")
@@ -526,6 +872,8 @@ def run_daily_optimization() -> None:
     print(f"Park net profit: {summary['park_net_profit_eur']:.2f} EUR")
     print(f"Schedule CSV: {schedule_path}")
     print(f"Visual output: {plot_path}")
+    if benchmark_comparison_path is not None:
+        print(f"Benchmark comparison CSV: {benchmark_comparison_path}")
     print(f"Report: {report_path}")
 
 
@@ -570,16 +918,38 @@ def run_annual_optimization() -> None:
         test_params=test_params,
         degradation_source=degradation_source,
     )
+    benchmark_results = run_annual_benchmarks(prices_year, grouped_days, test_params)
+    benchmark_comparison = (
+        build_benchmark_comparison(annual_summary, benchmark_results)
+        if benchmark_results
+        else None
+    )
 
     schedule_path = output_dir / f"annual_{YEAR}_schedule.csv"
     daily_path = output_dir / f"annual_{YEAR}_daily_stats.csv"
     monthly_path = output_dir / f"annual_{YEAR}_monthly_stats.csv"
     report_path = output_dir / f"annual_{YEAR}_report.md"
+    output_slug = f"annual_{YEAR}"
+    benchmark_schedule_paths, benchmark_comparison_path = write_benchmark_outputs(
+        benchmark_results,
+        benchmark_comparison,
+        output_dir,
+        output_slug,
+    )
 
     annual_schedule.to_csv(schedule_path, index=False)
     daily_stats.to_csv(daily_path, index=False)
     monthly_stats.to_csv(monthly_path, index=False)
-    write_annual_report(annual_summary, schedule_path, daily_path, monthly_path, report_path)
+    write_annual_report(
+        annual_summary,
+        schedule_path,
+        daily_path,
+        monthly_path,
+        report_path,
+        benchmark_comparison=benchmark_comparison,
+        benchmark_comparison_path=benchmark_comparison_path,
+        benchmark_schedule_paths=benchmark_schedule_paths,
+    )
 
     print("Annual optimization completed.")
     print(f"Year: {YEAR}")
@@ -601,6 +971,8 @@ def run_annual_optimization() -> None:
         "Net profit per MWh sold: "
         f"{annual_summary['net_profit_eur_per_mwh_sold']:.2f} EUR/MWh"
     )
+    if benchmark_comparison_path is not None:
+        print(f"Benchmark comparison CSV: {benchmark_comparison_path}")
     print(f"Report: {report_path}")
 
 

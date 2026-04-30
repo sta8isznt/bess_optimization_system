@@ -215,35 +215,71 @@ def build_financial_chart(summary: dict):
     return _dark_layout(fig, height=410), "plotly"
 
 
-def build_scenario_chart(comparison: pd.DataFrame):
+def build_model_benchmark_chart(comparison: pd.DataFrame):
     if not PLOTLY_AVAILABLE:
         return None, "matplotlib"
 
-    available = comparison[comparison["available"]].copy()
+    if comparison is None or comparison.empty:
+        return None, "plotly"
+
+    available_mask = (
+        comparison["available"].astype(bool)
+        if "available" in comparison.columns
+        else pd.Series(True, index=comparison.index)
+    )
+    available = comparison[available_mask].copy()
     if available.empty:
         return None, "plotly"
+
+    model_ids = available.get("model_id", pd.Series("", index=available.index)).astype(str)
+    base_rows = available[model_ids == "degradation_aware_milp"]
+    if base_rows.empty:
+        base_profit = float(pd.to_numeric(available["Net profit EUR"], errors="coerce").dropna().iloc[0])
+    else:
+        base_profit = float(base_rows["Net profit EUR"].iloc[0])
+
+    color_map = {
+        "degradation_aware_milp": BLUE,
+        "perfect": GREEN,
+        "naive": AMBER,
+    }
+    bar_colors = model_ids.map(color_map).fillna(BLUE)
+    annotations = []
+    for _, row in available.iterrows():
+        delta = row.get("Delta vs degradation-aware MILP EUR")
+        if row.get("model_id") == "degradation_aware_milp" or pd.isna(delta):
+            annotations.append("")
+        else:
+            annotations.append(f"{float(delta):+,.0f} EUR")
 
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
-            x=available["scenario"],
-            y=available["net_profit_eur"],
+            x=available["Model"],
+            y=available["Net profit EUR"],
+            text=annotations,
+            textposition="outside",
+            cliponaxis=False,
             name="Net profit",
-            marker_color=BLUE,
+            marker_color=bar_colors,
         )
     )
-    fig.add_trace(
-        go.Bar(
-            x=available["scenario"],
-            y=available["degradation_cost_eur"],
-            name="Degradation cost",
-            marker_color=AMBER,
-        )
+    fig.add_hline(
+        y=base_profit,
+        line_dash="dash",
+        line_color="rgba(226, 232, 240, 0.45)",
+        annotation_text="Degradation-aware MILP baseline",
+        annotation_position="top left",
     )
     fig.update_layout(
-        title={"text": "Scenario Comparison", "x": 0.01},
-        barmode="group",
-        xaxis_tickangle=-18,
+        title={
+            "text": "Optimization Model Benchmark",
+            "x": 0.5,
+            "xanchor": "center",
+            "font": {"size": 19, "color": TEXT},
+        },
+        showlegend=False,
+        xaxis_tickangle=-8,
     )
     fig.update_yaxes(title_text="EUR")
     return _dark_layout(fig, height=430), "plotly"

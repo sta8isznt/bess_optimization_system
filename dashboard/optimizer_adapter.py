@@ -28,11 +28,17 @@ from optimization.backtesting_loaders import (  # noqa: E402
     DEFAULT_PRICE_SIGNALS_PATH,
     DEFAULT_PYBAMM_ONLY_LUT_PATH,
 )
+from optimization.benchmarking import BENCHMARK_LABELS, run_benchmark_model  # noqa: E402
 from optimization.config import params as BASE_PARAMS  # noqa: E402
 from optimization.engine import bess_order  # noqa: E402
 
 
 CLEANED_DATA_DIR = PROJECT_ROOT / "optimization" / "data" / "cleaned_data"
+BASE_BENCHMARK_MODEL_ID = "degradation_aware_milp"
+BASE_BENCHMARK_MODEL_LABEL = "Degradation-aware MILP (PyBaMM/LUT cost)"
+BENCHMARK_MODEL_IDS = ("perfect", "naive")
+DASHBOARD_NAIVE_ALPHA_FACTOR = 0.05
+DASHBOARD_NAIVE_MARGIN = 0.05
 
 TIME_COLUMNS = ("DELIVERY_MTU", "timestamp", "datetime", "time")
 PRICE_COLUMNS = (
@@ -416,6 +422,279 @@ def _apply_scale(schedule: pd.DataFrame, summary: dict, params: dict, scale_capa
     return scaled, out
 
 
+def _summary_value(summary: dict, base_key: str, park_key: str) -> float:
+    if float(summary.get("scale_factor", 1.0)) != 1.0 and park_key in summary:
+        return float(summary[park_key])
+    return float(summary.get(base_key, 0.0))
+
+
+def _benchmark_note(model_id: str, summary: dict | None = None) -> str:
+    if model_id == BASE_BENCHMARK_MODEL_ID:
+        return "Selected degradation-aware optimizer."
+    if model_id == "perfect":
+        return "Perfect foresight with zero degradation cost."
+    if model_id == "naive":
+        alpha = float((summary or {}).get("naive_alpha_factor", DASHBOARD_NAIVE_ALPHA_FACTOR))
+        margin = float((summary or {}).get("naive_margin", DASHBOARD_NAIVE_MARGIN))
+        return f"EMA threshold rule, alpha {alpha:g}, margin {margin:g}; zero degradation cost."
+    return ""
+
+
+def _benchmark_comparison_row(
+    model_id: str,
+    model_label: str,
+    summary: dict | None,
+    base_summary: dict,
+    available: bool = True,
+    note: str = "",
+) -> dict:
+    base_net = _summary_value(base_summary, "net_profit_eur", "park_net_profit_eur")
+    if not available or summary is None:
+        return {
+            "model_id": model_id,
+            "available": False,
+            "Model": model_label,
+            "Status": "Unavailable",
+            "Net profit EUR": np.nan,
+            "Delta vs degradation-aware MILP EUR": np.nan,
+            "Delta vs degradation-aware MILP %": np.nan,
+            "Revenue EUR": np.nan,
+            "Purchase cost EUR": np.nan,
+            "Degradation cost EUR": np.nan,
+            "Bought MWh": np.nan,
+            "Sold MWh": np.nan,
+            "Throughput MWh": np.nan,
+            "Equivalent cycles": np.nan,
+            "Final SoC %": np.nan,
+            "Note": note,
+        }
+
+    net = _summary_value(summary, "net_profit_eur", "park_net_profit_eur")
+    delta = net - base_net
+    return {
+        "model_id": model_id,
+        "available": True,
+        "Model": model_label,
+        "Status": str(summary.get("solver_status", "Unknown")),
+        "Net profit EUR": net,
+        "Delta vs degradation-aware MILP EUR": delta,
+        "Delta vs degradation-aware MILP %": safe_divide(delta, abs(base_net)) * 100.0,
+        "Revenue EUR": _summary_value(summary, "gross_revenue_eur", "park_gross_revenue_eur"),
+        "Purchase cost EUR": _summary_value(summary, "gross_purchase_eur", "park_gross_purchase_eur"),
+        "Degradation cost EUR": _summary_value(summary, "degradation_cost_eur", "park_degradation_cost_eur"),
+        "Bought MWh": _summary_value(summary, "buy_energy_mwh", "park_buy_energy_mwh"),
+        "Sold MWh": _summary_value(summary, "sell_energy_mwh", "park_sell_energy_mwh"),
+        "Throughput MWh": _summary_value(summary, "total_throughput_mwh", "park_total_throughput_mwh"),
+        "Equivalent cycles": float(summary.get("equivalent_discharge_cycles", 0.0)),
+        "Final SoC %": float(summary.get("final_soc_pct", 0.0)) * 100.0,
+        "Note": note or _benchmark_note(model_id, summary),
+    }
+
+
+def _annual_summary_from_schedule(
+    schedule: pd.DataFrame,
+    params: dict,
+    year: int,
+    days: int,
+    optimal_days: int,
+    solver_status: str,
+    degradation_source: str,
+) -> dict:
+    gross_revenue = float(schedule["gross_revenue_eur"].sum())
+    gross_purchase = float(schedule["gross_purchase_eur"].sum())
+    degradation_cost = float(schedule["degradation_cost_eur"].sum())
+    net_profit = float(schedule["interval_profit_eur"].sum())
+    buy_energy = float(schedule["buy_energy_mwh"].sum())
+    sell_energy = float(schedule["sell_energy_mwh"].sum())
+    return {
+        "solver_status": solver_status,
+        "year": int(year),
+        "days": int(days),
+        "intervals": int(schedule.shape[0]),
+        "optimal_days": int(optimal_days),
+        "gross_revenue_eur": gross_revenue,
+        "gross_purchase_eur": gross_purchase,
+        "degradation_cost_eur": degradation_cost,
+        "net_profit_eur": net_profit,
+        "buy_energy_mwh": buy_energy,
+        "sell_energy_mwh": sell_energy,
+        "total_throughput_mwh": buy_energy + sell_energy,
+        "equivalent_discharge_cycles": safe_divide(sell_energy, params["e_max"]),
+        "buy_intervals": int((schedule["operation"] == "buy").sum()),
+        "sell_intervals": int((schedule["operation"] == "sell").sum()),
+        "idle_intervals": int((schedule["operation"] == "idle").sum()),
+        "final_soc_pct": float(schedule["soc_pct"].iloc[-1]),
+        "min_soc_pct": float(schedule["soc_pct"].min()),
+        "max_soc_pct": float(schedule["soc_pct"].max()),
+        "price_min_eur_mwh": float(schedule["price_eur_mwh"].min()),
+        "price_max_eur_mwh": float(schedule["price_eur_mwh"].max()),
+        "price_mean_eur_mwh": float(schedule["price_eur_mwh"].mean()),
+        "battery_power_mw": float(params["p_max"]),
+        "battery_capacity_mwh": float(params["e_max"]),
+        "battery_duration_h": safe_divide(float(params["e_max"]), float(params["p_max"])),
+        "terminal_soc_mode": params.get("terminal_soc_mode", "equal_initial"),
+        "degradation_cost_source": degradation_source,
+    }
+
+
+def _run_daily_benchmark_comparison(
+    prices: pd.Series,
+    params: dict,
+    base_summary: dict,
+    scale_capacity_mw: float | None,
+    solver_msg: bool,
+) -> tuple[pd.DataFrame, list[str]]:
+    rows = [
+        _benchmark_comparison_row(
+            BASE_BENCHMARK_MODEL_ID,
+            BASE_BENCHMARK_MODEL_LABEL,
+            base_summary,
+            base_summary,
+            note=_benchmark_note(BASE_BENCHMARK_MODEL_ID),
+        )
+    ]
+    warnings = []
+    for model_id in BENCHMARK_MODEL_IDS:
+        model_label = BENCHMARK_LABELS[model_id]
+        try:
+            schedule, summary = run_benchmark_model(
+                model_id=model_id,
+                prices=prices,
+                test_params=params,
+                solver_msg=solver_msg,
+                naive_alpha_factor=DASHBOARD_NAIVE_ALPHA_FACTOR,
+                naive_margin=DASHBOARD_NAIVE_MARGIN,
+            )
+            _, summary = _apply_scale(schedule, summary, params, scale_capacity_mw)
+            rows.append(
+                _benchmark_comparison_row(
+                    model_id,
+                    model_label,
+                    summary,
+                    base_summary,
+                    note=_benchmark_note(model_id, summary),
+                )
+            )
+        except Exception as exc:
+            message = f"{model_label} benchmark unavailable: {exc}"
+            warnings.append(message)
+            rows.append(
+                _benchmark_comparison_row(
+                    model_id,
+                    model_label,
+                    None,
+                    base_summary,
+                    available=False,
+                    note=str(exc),
+                )
+            )
+    return pd.DataFrame(rows), warnings
+
+
+def _run_annual_benchmark_comparison(
+    prices_year: pd.Series,
+    grouped_days: list[tuple[pd.Timestamp, pd.Series]],
+    params: dict,
+    base_summary: dict,
+    scale_capacity_mw: float | None,
+    solver_msg: bool,
+    year: int,
+) -> tuple[pd.DataFrame, list[str]]:
+    rows = [
+        _benchmark_comparison_row(
+            BASE_BENCHMARK_MODEL_ID,
+            BASE_BENCHMARK_MODEL_LABEL,
+            base_summary,
+            base_summary,
+            note=_benchmark_note(BASE_BENCHMARK_MODEL_ID),
+        )
+    ]
+    warnings = []
+    days = len(grouped_days)
+    for model_id in BENCHMARK_MODEL_IDS:
+        model_label = BENCHMARK_LABELS[model_id]
+        try:
+            benchmark_note = ""
+            if model_id == "naive":
+                schedule, metadata_summary = run_benchmark_model(
+                    model_id=model_id,
+                    prices=prices_year,
+                    test_params=params,
+                    solver_msg=solver_msg,
+                    naive_alpha_factor=DASHBOARD_NAIVE_ALPHA_FACTOR,
+                    naive_margin=DASHBOARD_NAIVE_MARGIN,
+                )
+                daily_summaries = []
+                optimal_days = 0
+                solver_status = str(metadata_summary.get("solver_status", "Heuristic"))
+            else:
+                schedules = []
+                daily_summaries = []
+                day_failures = []
+                for day, day_prices in grouped_days:
+                    try:
+                        day_schedule, day_summary = run_benchmark_model(
+                            model_id=model_id,
+                            prices=day_prices,
+                            test_params=params,
+                            solver_msg=solver_msg,
+                            naive_alpha_factor=DASHBOARD_NAIVE_ALPHA_FACTOR,
+                            naive_margin=DASHBOARD_NAIVE_MARGIN,
+                        )
+                        schedules.append(day_schedule)
+                        daily_summaries.append(day_summary)
+                    except Exception as day_exc:
+                        day_failures.append(f"{pd.Timestamp(day).date().isoformat()}: {day_exc}")
+                if not schedules:
+                    raise RuntimeError("; ".join(day_failures) or "No daily benchmark schedules were solved.")
+                schedule = pd.concat(schedules, ignore_index=True)
+                metadata_summary = daily_summaries[0]
+                optimal_days = int(sum(item.get("solver_status") == "Optimal" for item in daily_summaries))
+                solver_status = "Optimal" if optimal_days == days and not day_failures else "Partial"
+                if day_failures:
+                    benchmark_note = f"{len(day_failures)} daily benchmark runs unavailable; completed days aggregated."
+                    warnings.append(f"{model_label}: {benchmark_note}")
+
+            summary = _annual_summary_from_schedule(
+                schedule=schedule,
+                params=params,
+                year=year,
+                days=days,
+                optimal_days=optimal_days,
+                solver_status=solver_status,
+                degradation_source=str(metadata_summary.get("degradation_cost_source", "")),
+            )
+            summary["benchmark_model"] = model_id
+            summary["model_label"] = model_label
+            if "naive_alpha_factor" in metadata_summary:
+                summary["naive_alpha_factor"] = metadata_summary["naive_alpha_factor"]
+                summary["naive_margin"] = metadata_summary["naive_margin"]
+            _, summary = _apply_scale(schedule, summary, params, scale_capacity_mw)
+            rows.append(
+                _benchmark_comparison_row(
+                    model_id,
+                    model_label,
+                    summary,
+                    base_summary,
+                    note=benchmark_note or _benchmark_note(model_id, summary),
+                )
+            )
+        except Exception as exc:
+            message = f"{model_label} benchmark unavailable: {exc}"
+            warnings.append(message)
+            rows.append(
+                _benchmark_comparison_row(
+                    model_id,
+                    model_label,
+                    None,
+                    base_summary,
+                    available=False,
+                    note=str(exc),
+                )
+            )
+    return pd.DataFrame(rows), warnings
+
+
 def _optimize_price_series(
     prices: pd.Series,
     params: dict,
@@ -516,6 +795,15 @@ def run_daily_optimization(
     )
     result["summary_dict"]["price_start"] = str(prices.index.min())
     result["summary_dict"]["price_end"] = str(prices.index.max())
+    comparison, benchmark_warnings = _run_daily_benchmark_comparison(
+        prices=prices,
+        params=params,
+        base_summary=result["summary_dict"],
+        scale_capacity_mw=scale_capacity_mw,
+        solver_msg=solver_msg,
+    )
+    result["benchmark_comparison_df"] = comparison
+    result["warnings"].extend(benchmark_warnings)
     return result
 
 
@@ -544,7 +832,8 @@ def run_annual_optimization(
     schedules = []
     daily_summaries = []
     run_warnings = list(warnings)
-    for _, day_prices in prices_year.groupby(prices_year.index.normalize()):
+    grouped_days = list(prices_year.groupby(prices_year.index.normalize()))
+    for _, day_prices in grouped_days:
         result = _optimize_price_series(
             prices=day_prices,
             params=params,
@@ -601,12 +890,23 @@ def run_annual_optimization(
         "validation_passed": not run_warnings,
     }
     annual_schedule, summary = _apply_scale(annual_schedule, summary, params, scale_capacity_mw)
+    comparison, benchmark_warnings = _run_annual_benchmark_comparison(
+        prices_year=prices_year,
+        grouped_days=grouped_days,
+        params=params,
+        base_summary=summary,
+        scale_capacity_mw=scale_capacity_mw,
+        solver_msg=solver_msg,
+        year=int(year),
+    )
+    run_warnings.extend(benchmark_warnings)
 
     return {
         "status": status,
         "dispatch_df": annual_schedule,
         "summary_dict": summary,
         "daily_stats_df": daily_stats,
+        "benchmark_comparison_df": comparison,
         "params_used": dict(params),
         "files_used": {
             "price_file": str(price_file),

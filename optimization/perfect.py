@@ -1,10 +1,11 @@
-# benchmark 1 for our base optimization system
-
-# No degradation optimization
+"""Perfect-foresight MILP benchmark with no degradation cost."""
 
 import pulp as pl
 
-from config import params
+try:
+    from .config import params
+except ImportError:  # Keeps direct execution from the optimization/ folder working.
+    from config import params
 
 
 def default_solver(msg=False):

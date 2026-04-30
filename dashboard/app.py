@@ -6,7 +6,6 @@ from datetime import date
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -18,8 +17,8 @@ try:
     from .charts import (
         build_dispatch_chart,
         build_financial_chart,
+        build_model_benchmark_chart,
         build_price_preview_chart,
-        build_scenario_chart,
     )
     from .optimizer_adapter import (
         DashboardOptimizerError,
@@ -48,8 +47,8 @@ except ImportError:
     from charts import (
         build_dispatch_chart,
         build_financial_chart,
+        build_model_benchmark_chart,
         build_price_preview_chart,
-        build_scenario_chart,
     )
     from optimizer_adapter import (
         DashboardOptimizerError,
@@ -187,107 +186,6 @@ def build_table(schedule: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = table.select_dtypes(include=["float", "int"]).columns
     table[numeric_cols] = table[numeric_cols].round(4)
     return table
-
-
-def scenario_row(name: str, result: dict | None, available: bool, note: str = "") -> dict:
-    if not available or result is None:
-        return {
-            "scenario": name,
-            "available": False,
-            "status": "Unavailable",
-            "net_profit_eur": np.nan,
-            "degradation_cost_eur": np.nan,
-            "bought_mwh": np.nan,
-            "sold_mwh": np.nan,
-            "throughput_mwh": np.nan,
-            "final_soc_pct": np.nan,
-            "note": note,
-        }
-
-    summary = result["summary_dict"]
-    return {
-        "scenario": name,
-        "available": True,
-        "status": str(summary.get("solver_status", result.get("status", "Unknown"))),
-        "net_profit_eur": scaled(summary, "net_profit_eur", "park_net_profit_eur"),
-        "degradation_cost_eur": scaled(summary, "degradation_cost_eur", "park_degradation_cost_eur"),
-        "bought_mwh": scaled(summary, "buy_energy_mwh", "park_buy_energy_mwh"),
-        "sold_mwh": scaled(summary, "sell_energy_mwh", "park_sell_energy_mwh"),
-        "throughput_mwh": scaled(summary, "total_throughput_mwh", "park_total_throughput_mwh"),
-        "final_soc_pct": float(summary.get("final_soc_pct", 0.0)) * 100.0,
-        "note": note,
-    }
-
-
-def run_scenario_comparison(base_result: dict, config: dict, lut_files: list[Path]) -> pd.DataFrame:
-    rows = [scenario_row("Base case", base_result, True, "Current selected parameters")]
-    base_params = dict(config["params_override"])
-    scale_capacity_mw = config["scale_capacity_mw"]
-
-    pybamm_lut = default_lut_for_source("pybamm_only", lut_files)
-    conservative_source = config["degradation_source"]
-    conservative_lut = config["degradation_lut_file"]
-    conservative_multiplier = 1.5
-    conservative_note = "Same LUT with 1.5x degradation cost"
-    if pybamm_lut is not None and config["degradation_source"] != "pybamm_only":
-        conservative_source = "pybamm_only"
-        conservative_lut = pybamm_lut
-        conservative_multiplier = 1.0
-        conservative_note = "PyBaMM-only degradation LUT"
-
-    scenarios = [
-        {
-            "name": "Conservative degradation",
-            "params": base_params,
-            "source": conservative_source,
-            "lut": conservative_lut,
-            "multiplier": conservative_multiplier,
-            "note": conservative_note,
-        },
-        {
-            "name": "Higher power / lower duration",
-            "params": {**base_params, "e_max": max(float(base_params["p_max"]) * 1.0, 0.1)},
-            "source": config["degradation_source"],
-            "lut": config["degradation_lut_file"],
-            "multiplier": config["degradation_cost_multiplier"],
-            "note": "One-hour battery at selected power",
-        },
-        {
-            "name": "Lower power / longer duration",
-            "params": {**base_params, "e_max": max(float(base_params["p_max"]) * 4.0, 0.1)},
-            "source": config["degradation_source"],
-            "lut": config["degradation_lut_file"],
-            "multiplier": config["degradation_cost_multiplier"],
-            "note": "Four-hour battery at selected power",
-        },
-        {
-            "name": "No degradation cost",
-            "params": base_params,
-            "source": "zero",
-            "lut": None,
-            "multiplier": 1.0,
-            "note": "For comparison only",
-        },
-    ]
-
-    for item in scenarios:
-        try:
-            result = run_daily_optimization(
-                target_date=config["target_date"],
-                price_file=config["price_file"],
-                degradation_lut_file=item["lut"],
-                params_override=item["params"],
-                degradation_source=item["source"],
-                scale_capacity_mw=scale_capacity_mw,
-                temperature_c=config["temperature_c"],
-                terminal_soc_mode=config["terminal_soc_mode"],
-                degradation_cost_multiplier=item["multiplier"],
-            )
-            rows.append(scenario_row(item["name"], result, True, item["note"]))
-        except Exception as exc:
-            rows.append(scenario_row(item["name"], None, False, str(exc)))
-
-    return pd.DataFrame(rows)
 
 
 def path_label(path: Path | str | None) -> str:
@@ -509,7 +407,6 @@ installed_capacity_mw = st.sidebar.number_input(
 )
 scale_capacity_mw = float(installed_capacity_mw) if scale_to_capacity else None
 st.sidebar.info("Solver: CBC through PuLP")
-run_scenarios = st.sidebar.checkbox("Run scenario comparison", value=True, disabled=run_mode != "Daily")
 
 run_clicked = st.sidebar.button("Run Optimization", type="primary")
 
@@ -522,7 +419,6 @@ if run_clicked:
     if errors:
         st.session_state["last_error"] = "\n".join(errors)
         st.session_state.pop("last_result", None)
-        st.session_state.pop("scenario_comparison", None)
     else:
         st.session_state.pop("last_error", None)
         try:
@@ -563,19 +459,9 @@ if run_clicked:
                     "degradation_cost_multiplier": 1.0,
                     "run_mode": run_mode,
                 }
-
-                if run_mode == "Daily" and run_scenarios:
-                    st.session_state["scenario_comparison"] = run_scenario_comparison(
-                        result,
-                        st.session_state["last_config"],
-                        lut_files,
-                    )
-                else:
-                    st.session_state.pop("scenario_comparison", None)
         except Exception as exc:
             st.session_state["last_error"] = str(exc)
             st.session_state.pop("last_result", None)
-            st.session_state.pop("scenario_comparison", None)
 
 if st.session_state.get("last_error"):
     st.error(st.session_state["last_error"])
@@ -662,21 +548,18 @@ if financial_fig is not None and financial_kind == "plotly":
 else:
     st.info("Install Plotly to see the interactive financial chart.")
 
-section_title("Scenario Comparison")
-comparison = st.session_state.get("scenario_comparison")
-if comparison is None:
-    if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
-        st.info("Scenario comparison is available in Daily mode to keep the demo responsive.")
-    else:
-        st.info("Enable scenario comparison in the sidebar and run the optimizer.")
+section_title("Optimization Model Benchmark")
+comparison = result.get("benchmark_comparison_df")
+if comparison is None or comparison.empty:
+    st.info("Benchmark comparison is unavailable for this run.")
 else:
-    display_comparison = comparison.copy()
-    for col in ["net_profit_eur", "degradation_cost_eur", "bought_mwh", "sold_mwh", "throughput_mwh", "final_soc_pct"]:
-        display_comparison[col] = display_comparison[col].round(3)
+    display_comparison = comparison.drop(columns=["model_id", "available"], errors="ignore").copy()
+    numeric_cols = display_comparison.select_dtypes(include=["float", "int"]).columns
+    display_comparison[numeric_cols] = display_comparison[numeric_cols].round(3)
     st.dataframe(display_comparison, use_container_width=True, hide_index=True)
-    scenario_fig, scenario_kind = build_scenario_chart(comparison)
-    if scenario_fig is not None and scenario_kind == "plotly":
-        st.plotly_chart(scenario_fig, use_container_width=True)
+    benchmark_fig, benchmark_kind = build_model_benchmark_chart(comparison)
+    if benchmark_fig is not None and benchmark_kind == "plotly":
+        st.plotly_chart(benchmark_fig, use_container_width=True)
 
 section_title("Dispatch Table")
 dispatch_table = build_table(schedule)

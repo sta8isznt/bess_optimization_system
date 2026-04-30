@@ -10,7 +10,7 @@ format:
 	black src scripts optimization
 
 backtest:
-	python optimization/run_optimization_backtest.py
+	python optimization/run_engine.py
 
 clean:
 	rm -rf data/produced_data optimization/daily_outputs optimization/annual_outputs

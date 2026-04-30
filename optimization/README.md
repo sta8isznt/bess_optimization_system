@@ -11,10 +11,26 @@ runners.
 
 ## Run
 
-Edit the settings at the top of `run_optimization_backtest.py`, especially
-`RUN_MODE = "daily"` or `RUN_MODE = "annual"`, then run that file from the IDE.
+Edit the settings at the top of `run_engine.py`, especially
+`RUN_MODE = "daily"` or `RUN_MODE = "annual"`, then run that file from the IDE
+or run:
 
-The scripts write local outputs under:
+```bash
+python optimization/run_engine.py
+```
+
+The script writes local outputs under `optimization/daily_outputs/` or
+`optimization/annual_outputs/`.
+
+Benchmark comparisons are controlled with:
+
+- `RUN_BENCHMARKS = True`
+- `BENCHMARK_MODELS = ("perfect", "naive")`
+
+When benchmarks are enabled, the reports include the current degradation-aware
+MILP, a perfect-foresight no-degradation MILP, and a naive EMA heuristic. The
+benchmark rows intentionally use zero degradation cost and are written to
+separate benchmark schedule CSVs plus a benchmark comparison CSV.
 
 ## PHASE 3: 
 

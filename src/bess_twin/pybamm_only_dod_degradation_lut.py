@@ -55,7 +55,7 @@ class PyBaMMOnlyConfig:
     # Degradation-to-cost conversion.
     fixed_temperature_c: float = 25.0
     soh_eol: float = 0.80
-    replacement_cost_eur_per_MWh_capacity: float = 120_000.0
+    replacement_cost_eur_per_MWh_capacity: float = 60_000.0
 
     # DAM optimizer breakpoints. For 2MWh/1MW/15min, DoD <= 0.125 is feasible.
     dod_values: Tuple[float, ...] = (0.05, 0.08, 0.10, 0.125)
