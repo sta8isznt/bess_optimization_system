@@ -32,6 +32,37 @@ MILP, a perfect-foresight no-degradation MILP, and a naive EMA heuristic. The
 benchmark rows intentionally use zero degradation cost and are written to
 separate benchmark schedule CSVs plus a benchmark comparison CSV.
 
+## Forecast-Driven Dispatch Backtest
+
+Use this when you want the optimizer to plan on predicted prices, but evaluate
+the resulting dispatch against actual realized DAM prices:
+
+```bash
+python scripts/run_forecast_strategy_backtest.py \
+  --input-file optimization/data/cleaned_data/price_signals_15m.csv \
+  --backtest-days 30 \
+  --window-days 30 \
+  --degradation-source pybamm_only
+```
+
+The wrapper leaves the MILP optimizer unchanged. For each target day it:
+
+1. builds a next-day forecast using only timestamps before the target day,
+2. optimizes the BESS schedule on the forecast price series,
+3. preserves that dispatch and recalculates settlement cashflows on actual prices.
+
+Outputs are written under `optimization/forecast_backtest_outputs/`:
+
+- `*_schedule.csv`: interval-level dispatch with forecast and actual cashflows.
+- `*_daily_stats.csv`: one row per target day.
+- `*_trade_stats.csv`: active operation blocks paired into a ledger. Rows with
+  `sequence = buy->sell` are strict completed trades; `sell->buy` and unpaired
+  rows are retained for P&L traceability but excluded from the strict completed
+  buy/sell trade ratio.
+- `*_summary.csv` and `*_report.md`: aggregate profitability, forecast-error,
+  strict completed buy/sell trade ratios, all-ledger ratios, and park scale-up
+  statistics.
+
 ## PHASE 3: 
 
 ### Decision Variables:
