@@ -1,4 +1,4 @@
-.PHONY: install lint format backtest clean
+.PHONY: install lint format backtest invest clean
 
 install:
 	pip install -e ".[dev]"
@@ -11,6 +11,9 @@ format:
 
 backtest:
 	python optimization/run_optimization_backtest.py
+
+invest:
+	python3 scripts/run_investment.py
 
 clean:
 	rm -rf data/produced_data optimization/daily_outputs optimization/annual_outputs

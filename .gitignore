@@ -43,6 +43,7 @@ data/raw/*
 data/synthetic/*
 data/processed/*
 data/produced_data/
+data_final/
 models/**/*.pt
 models/**/*.pth
 checkpoints/**/*.pt

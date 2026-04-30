@@ -10,11 +10,28 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 DASHBOARD_DIR = Path(__file__).resolve().parent
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 
+from investment import render_investment_tab
+
 try:
+    from .decision_support import (
+        SCENARIOS,
+        STRATEGIES,
+        apply_decision_view,
+        build_benchmark_chart,
+        build_benchmark_table,
+        build_cumulative_profit_chart,
+        build_dispatch_inspection_chart,
+        data_quality_checks,
+        explain_dispatch_row,
+    )
     from .charts import (
         build_dispatch_chart,
         build_financial_chart,
@@ -45,6 +62,17 @@ try:
         system_overview,
     )
 except ImportError:
+    from decision_support import (
+        SCENARIOS,
+        STRATEGIES,
+        apply_decision_view,
+        build_benchmark_chart,
+        build_benchmark_table,
+        build_cumulative_profit_chart,
+        build_dispatch_inspection_chart,
+        data_quality_checks,
+        explain_dispatch_row,
+    )
     from charts import (
         build_dispatch_chart,
         build_financial_chart,
@@ -223,6 +251,7 @@ def run_scenario_comparison(base_result: dict, config: dict, lut_files: list[Pat
     rows = [scenario_row("Base case", base_result, True, "Current selected parameters")]
     base_params = dict(config["params_override"])
     scale_capacity_mw = config["scale_capacity_mw"]
+    run_mode_value = str(config.get("run_mode", "Daily"))
 
     pybamm_lut = default_lut_for_source("pybamm_only", lut_files)
     conservative_source = config["degradation_source"]
@@ -272,17 +301,30 @@ def run_scenario_comparison(base_result: dict, config: dict, lut_files: list[Pat
 
     for item in scenarios:
         try:
-            result = run_daily_optimization(
-                target_date=config["target_date"],
-                price_file=config["price_file"],
-                degradation_lut_file=item["lut"],
-                params_override=item["params"],
-                degradation_source=item["source"],
-                scale_capacity_mw=scale_capacity_mw,
-                temperature_c=config["temperature_c"],
-                terminal_soc_mode=config["terminal_soc_mode"],
-                degradation_cost_multiplier=item["multiplier"],
-            )
+            if run_mode_value == "Annual":
+                result = run_annual_optimization(
+                    year=int(config["year"]),
+                    price_file=config["price_file"],
+                    degradation_lut_file=item["lut"],
+                    params_override=item["params"],
+                    degradation_source=item["source"],
+                    scale_capacity_mw=scale_capacity_mw,
+                    temperature_c=config["temperature_c"],
+                    terminal_soc_mode=config["terminal_soc_mode"],
+                    degradation_cost_multiplier=item["multiplier"],
+                )
+            else:
+                result = run_daily_optimization(
+                    target_date=config["target_date"],
+                    price_file=config["price_file"],
+                    degradation_lut_file=item["lut"],
+                    params_override=item["params"],
+                    degradation_source=item["source"],
+                    scale_capacity_mw=scale_capacity_mw,
+                    temperature_c=config["temperature_c"],
+                    terminal_soc_mode=config["terminal_soc_mode"],
+                    degradation_cost_multiplier=item["multiplier"],
+                )
             rows.append(scenario_row(item["name"], result, True, item["note"]))
         except Exception as exc:
             rows.append(scenario_row(item["name"], None, False, str(exc)))
@@ -509,7 +551,18 @@ installed_capacity_mw = st.sidebar.number_input(
 )
 scale_capacity_mw = float(installed_capacity_mw) if scale_to_capacity else None
 st.sidebar.info("Solver: CBC through PuLP")
-run_scenarios = st.sidebar.checkbox("Run scenario comparison", value=True, disabled=run_mode != "Daily")
+run_scenarios = st.sidebar.checkbox(
+    "Run scenario comparison",
+    value=run_mode == "Daily",
+    help="Annual scenario comparison follows the same pipeline as daily, but runs multiple annual optimizations and can take longer.",
+)
+
+st.sidebar.divider()
+with st.sidebar.expander("Decision View", expanded=False):
+    decision_scenario = st.selectbox("Scenario", list(SCENARIOS.keys()), index=0)
+    decision_strategy = st.selectbox("Strategy", list(STRATEGIES.keys()), index=0)
+show_degradation_overlay = False
+normalize_per_mwh = False
 
 run_clicked = st.sidebar.button("Run Optimization", type="primary")
 
@@ -522,6 +575,8 @@ if run_clicked:
     if errors:
         st.session_state["last_error"] = "\n".join(errors)
         st.session_state.pop("last_result", None)
+        st.session_state.pop("investment_summary_df", None)
+        st.session_state.pop("investment_source_label", None)
         st.session_state.pop("scenario_comparison", None)
     else:
         st.session_state.pop("last_error", None)
@@ -551,8 +606,11 @@ if run_clicked:
                     )
 
                 st.session_state["last_result"] = result
+                st.session_state["investment_summary_df"] = pd.DataFrame([result["summary_dict"]])
+                st.session_state["investment_source_label"] = "current optimization KPI output"
                 st.session_state["last_config"] = {
                     "target_date": pd.Timestamp(target_date).date().isoformat(),
+                    "year": int(year),
                     "price_file": price_file,
                     "degradation_lut_file": degradation_lut_file,
                     "params_override": params_override,
@@ -564,7 +622,7 @@ if run_clicked:
                     "run_mode": run_mode,
                 }
 
-                if run_mode == "Daily" and run_scenarios:
+                if run_scenarios:
                     st.session_state["scenario_comparison"] = run_scenario_comparison(
                         result,
                         st.session_state["last_config"],
@@ -575,6 +633,8 @@ if run_clicked:
         except Exception as exc:
             st.session_state["last_error"] = str(exc)
             st.session_state.pop("last_result", None)
+            st.session_state.pop("investment_summary_df", None)
+            st.session_state.pop("investment_source_label", None)
             st.session_state.pop("scenario_comparison", None)
 
 if st.session_state.get("last_error"):
@@ -631,6 +691,8 @@ if result is None:
         render_price_preview(price_file, "Daily", preview_date, int(year))
     else:
         st.warning(f"No DAM price data exists for {pd.Timestamp(preview_date).date().isoformat()}.")
+    section_title("Investment Analysis")
+    render_investment_tab()
     st.stop()
     raise SystemExit
 
@@ -646,54 +708,123 @@ else:
     chart_schedule = schedule
     chart_title = f"Daily Dispatch - {summary.get('date', '')}"
 
-section_title("Headline KPIs")
-render_kpis(summary)
+decision_schedule, decision_summary = apply_decision_view(
+    schedule,
+    summary,
+    decision_scenario,
+    decision_strategy,
+    normalize_per_mwh,
+)
+benchmark_df = build_benchmark_table(decision_schedule, decision_summary)
+quality_df = data_quality_checks(schedule, params_used)
 
-section_title("Dispatch Schedule")
-dispatch_fig, dispatch_kind = build_dispatch_chart(chart_schedule, params_used, chart_title)
-if dispatch_kind == "plotly":
-    st.plotly_chart(dispatch_fig, use_container_width=True)
-else:
-    st.pyplot(dispatch_fig, use_container_width=True)
+overview_tab, dispatch_tab, scenario_tab, data_tab, investment_tab = st.tabs(
+    ["Overview", "Dispatch", "Scenarios", "Data", "Investment Analysis"]
+)
 
-financial_fig, financial_kind = build_financial_chart(summary)
-if financial_fig is not None and financial_kind == "plotly":
-    st.plotly_chart(financial_fig, use_container_width=True)
-else:
-    st.info("Install Plotly to see the interactive financial chart.")
-
-section_title("Scenario Comparison")
-comparison = st.session_state.get("scenario_comparison")
-if comparison is None:
-    if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
-        st.info("Scenario comparison is available in Daily mode to keep the demo responsive.")
+with overview_tab:
+    section_title("Headline KPIs")
+    render_kpis(summary)
+    section_title("Decision View Snapshot")
+    compact_kpi_strip(
+        [
+            ("Scenario", decision_scenario, "accent"),
+            ("Strategy", decision_strategy, "accent"),
+            ("View net profit", f"EUR {decision_summary['view_net_profit_eur']:,.0f}", "positive" if decision_summary["view_net_profit_eur"] >= 0 else "negative"),
+            ("View degradation", f"EUR {decision_summary['view_degradation_cost_eur']:,.0f}", "negative"),
+        ]
+    )
+    cumulative_fig = build_cumulative_profit_chart(decision_schedule)
+    if cumulative_fig is not None:
+        st.plotly_chart(cumulative_fig, use_container_width=True)
+    financial_fig, financial_kind = build_financial_chart(summary)
+    if financial_fig is not None and financial_kind == "plotly":
+        st.plotly_chart(financial_fig, use_container_width=True)
     else:
-        st.info("Enable scenario comparison in the sidebar and run the optimizer.")
-else:
-    display_comparison = comparison.copy()
-    for col in ["net_profit_eur", "degradation_cost_eur", "bought_mwh", "sold_mwh", "throughput_mwh", "final_soc_pct"]:
-        display_comparison[col] = display_comparison[col].round(3)
-    st.dataframe(display_comparison, use_container_width=True, hide_index=True)
-    scenario_fig, scenario_kind = build_scenario_chart(comparison)
-    if scenario_fig is not None and scenario_kind == "plotly":
-        st.plotly_chart(scenario_fig, use_container_width=True)
+        st.info("Install Plotly to see the interactive financial chart.")
 
-section_title("Dispatch Table")
-dispatch_table = build_table(schedule)
-st.dataframe(dispatch_table, use_container_width=True, hide_index=True, height=410)
+with dispatch_tab:
+    section_title("Dispatch Schedule")
+    dispatch_fig, dispatch_kind = build_dispatch_chart(chart_schedule, params_used, chart_title)
+    if dispatch_kind == "plotly":
+        st.plotly_chart(dispatch_fig, use_container_width=True)
+    else:
+        st.pyplot(dispatch_fig, use_container_width=True)
 
-csv_schedule = dispatch_table.to_csv(index=False).encode("utf-8")
-csv_summary = pd.DataFrame([summary]).to_csv(index=False).encode("utf-8")
-download_a, download_b = st.columns(2)
-download_a.download_button(
-    "Download dispatch schedule CSV",
-    csv_schedule,
-    file_name="bess_dispatch_schedule.csv",
-    mime="text/csv",
-)
-download_b.download_button(
-    "Download summary KPIs CSV",
-    csv_summary,
-    file_name="bess_summary_kpis.csv",
-    mime="text/csv",
-)
+    section_title("Dispatch Inspection")
+    inspection_fig = build_dispatch_inspection_chart(decision_schedule, show_degradation_overlay)
+    if inspection_fig is not None:
+        st.plotly_chart(inspection_fig, use_container_width=True)
+    timestamp_options = decision_schedule["timestamp"].astype(str).tolist()
+    selected_timestamp = st.selectbox("Inspect timestamp", timestamp_options, index=min(len(timestamp_options) // 2, max(len(timestamp_options) - 1, 0)))
+    selected_row = decision_schedule[decision_schedule["timestamp"].astype(str) == selected_timestamp].iloc[0]
+    explanation = explain_dispatch_row(selected_row, decision_schedule, params_used)
+    explain_cols = st.columns(5)
+    explain_cols[0].metric("Action", explanation["action"])
+    explain_cols[1].metric("Price", explanation["price"])
+    explain_cols[2].metric("SoC", explanation["soc"])
+    explain_cols[3].metric("Degradation", explanation["degradation_cost"])
+    explain_cols[4].metric("Net profit", explanation["net_profit"])
+    constraint_grid(
+        [
+            ("Reason", explanation["reason"], True),
+            ("Price context", explanation["price_context"], True),
+            ("SoC condition", explanation["soc_condition"], True),
+            ("Degradation penalty", explanation["degradation_penalty"], True),
+            ("Power limit", explanation["power_limit"], True),
+        ]
+    )
+
+with scenario_tab:
+    section_title("Scenario Comparison")
+    comparison = st.session_state.get("scenario_comparison")
+    if comparison is None:
+        if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
+            st.info("Scenario comparison is available in Daily mode to keep the demo responsive.")
+        else:
+            st.info("Enable scenario comparison in the sidebar and run the optimizer.")
+    else:
+        display_comparison = comparison.copy()
+        for col in ["net_profit_eur", "degradation_cost_eur", "bought_mwh", "sold_mwh", "throughput_mwh", "final_soc_pct"]:
+            display_comparison[col] = display_comparison[col].round(3)
+        st.dataframe(display_comparison, use_container_width=True, hide_index=True)
+        scenario_fig, scenario_kind = build_scenario_chart(comparison)
+        if scenario_fig is not None and scenario_kind == "plotly":
+            st.plotly_chart(scenario_fig, use_container_width=True)
+
+    section_title("Benchmark Module")
+    benchmark_display = benchmark_df.copy()
+    for col in ["net_profit", "degradation_cost", "profit_after_degradation"]:
+        benchmark_display[col] = benchmark_display[col].round(2)
+    benchmark_display["equivalent_cycles"] = benchmark_display["equivalent_cycles"].round(3)
+    benchmark_display["final_soh_proxy"] = (benchmark_display["final_soh_proxy"] * 100.0).round(2)
+    st.dataframe(benchmark_display, use_container_width=True, hide_index=True)
+    benchmark_fig = build_benchmark_chart(benchmark_df)
+    if benchmark_fig is not None:
+        st.plotly_chart(benchmark_fig, use_container_width=True)
+
+with data_tab:
+    section_title("Dispatch Table")
+    dispatch_table = build_table(schedule)
+    st.dataframe(dispatch_table, use_container_width=True, hide_index=True, height=410)
+
+    csv_schedule = dispatch_table.to_csv(index=False).encode("utf-8")
+    csv_summary = pd.DataFrame([summary]).to_csv(index=False).encode("utf-8")
+    download_a, download_b = st.columns(2)
+    download_a.download_button(
+        "Download dispatch schedule CSV",
+        csv_schedule,
+        file_name="bess_dispatch_schedule.csv",
+        mime="text/csv",
+    )
+    download_b.download_button(
+        "Download summary KPIs CSV",
+        csv_summary,
+        file_name="bess_summary_kpis.csv",
+        mime="text/csv",
+    )
+    section_title("Data Quality Panel")
+    st.dataframe(quality_df, use_container_width=True, hide_index=True)
+
+with investment_tab:
+    render_investment_tab()
