@@ -2,26 +2,78 @@
 
 from __future__ import annotations
 
+from datetime import date
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from charts import build_dispatch_chart, build_financial_chart, build_scenario_chart
-from optimizer_adapter import (
-    DashboardOptimizerError,
-    available_dates,
-    available_years,
-    default_lut_for_source,
-    display_path,
-    list_lut_files,
-    list_price_files,
-    run_annual_optimization,
-    run_daily_optimization,
-    validate_parameters,
-)
-from styles import constraint_grid, hero, inject_css, section_title
+DASHBOARD_DIR = Path(__file__).resolve().parent
+if str(DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_DIR))
+
+try:
+    from .charts import (
+        build_dispatch_chart,
+        build_financial_chart,
+        build_price_preview_chart,
+        build_scenario_chart,
+    )
+    from .optimizer_adapter import (
+        DashboardOptimizerError,
+        available_dates,
+        available_years,
+        default_lut_for_source,
+        display_path,
+        list_lut_files,
+        list_price_files,
+        load_price_series,
+        run_annual_optimization,
+        run_daily_optimization,
+        validate_parameters,
+    )
+    from .styles import (
+        compact_kpi_strip,
+        config_grid,
+        constraint_grid,
+        executive_header,
+        headline_kpi_grid,
+        inject_css,
+        section_title,
+        system_overview,
+    )
+except ImportError:
+    from charts import (
+        build_dispatch_chart,
+        build_financial_chart,
+        build_price_preview_chart,
+        build_scenario_chart,
+    )
+    from optimizer_adapter import (
+        DashboardOptimizerError,
+        available_dates,
+        available_years,
+        default_lut_for_source,
+        display_path,
+        list_lut_files,
+        list_price_files,
+        load_price_series,
+        run_annual_optimization,
+        run_daily_optimization,
+        validate_parameters,
+    )
+    from styles import (
+        compact_kpi_strip,
+        config_grid,
+        constraint_grid,
+        executive_header,
+        headline_kpi_grid,
+        inject_css,
+        section_title,
+        system_overview,
+    )
 
 
 st.set_page_config(
@@ -42,6 +94,29 @@ def cached_years(path: str) -> list[int]:
     return available_years(Path(path))
 
 
+@st.cache_data(show_spinner=False)
+def cached_price_series(path: str) -> pd.Series:
+    return load_price_series(Path(path))
+
+
+def available_date_bounds(dates: list[pd.Timestamp]) -> tuple[date, date]:
+    ordered = sorted(pd.Timestamp(day).date() for day in dates)
+    return ordered[0], ordered[-1]
+
+
+def selected_date_or_fallback(preferred: pd.Timestamp, dates: list[pd.Timestamp]) -> date:
+    min_date, max_date = available_date_bounds(dates)
+    preferred_date = pd.Timestamp(preferred).date()
+    if min_date <= preferred_date <= max_date:
+        return preferred_date
+    return max_date
+
+
+def date_is_available(value, dates: list[pd.Timestamp]) -> bool:
+    selected = pd.Timestamp(value).date()
+    return selected in {pd.Timestamp(day).date() for day in dates}
+
+
 def eur(value: float) -> str:
     return f"{value:,.0f}"
 
@@ -57,25 +132,24 @@ def scaled(summary: dict, base_key: str, park_key: str) -> float:
 
 
 def render_kpis(summary: dict) -> None:
+    solver_status = str(summary.get("solver_status", "Unknown"))
+    net_profit = scaled(summary, "net_profit_eur", "park_net_profit_eur")
     values = [
-        ("Solver status", str(summary.get("solver_status", "Unknown"))),
-        ("Net profit EUR", eur(scaled(summary, "net_profit_eur", "park_net_profit_eur"))),
-        ("Gross revenue EUR", eur(scaled(summary, "gross_revenue_eur", "park_gross_revenue_eur"))),
-        ("Purchase cost EUR", eur(scaled(summary, "gross_purchase_eur", "park_gross_purchase_eur"))),
-        ("Degradation cost EUR", eur(scaled(summary, "degradation_cost_eur", "park_degradation_cost_eur"))),
-        ("Bought energy MWh", num(scaled(summary, "buy_energy_mwh", "park_buy_energy_mwh"), 2)),
-        ("Sold energy MWh", num(scaled(summary, "sell_energy_mwh", "park_sell_energy_mwh"), 2)),
-        ("Final SoC %", num(float(summary.get("final_soc_pct", 0.0)) * 100.0, 1)),
-        ("Charge intervals", f"{int(summary.get('buy_intervals', 0))}"),
-        ("Discharge intervals", f"{int(summary.get('sell_intervals', 0))}"),
-        ("Equivalent cycles", num(float(summary.get("equivalent_discharge_cycles", 0.0)), 3)),
-        ("Throughput MWh", num(scaled(summary, "total_throughput_mwh", "park_total_throughput_mwh"), 2)),
+        ("Solver status", solver_status, "positive" if solver_status.lower() == "optimal" else "negative"),
+        ("Net profit EUR", eur(net_profit), "positive" if net_profit >= 0 else "negative"),
+        ("Gross revenue EUR", eur(scaled(summary, "gross_revenue_eur", "park_gross_revenue_eur")), "positive"),
+        ("Purchase cost EUR", eur(scaled(summary, "gross_purchase_eur", "park_gross_purchase_eur")), "negative"),
+        ("Degradation cost EUR", eur(scaled(summary, "degradation_cost_eur", "park_degradation_cost_eur")), "negative"),
+        ("Bought energy MWh", num(scaled(summary, "buy_energy_mwh", "park_buy_energy_mwh"), 2), "accent"),
+        ("Sold energy MWh", num(scaled(summary, "sell_energy_mwh", "park_sell_energy_mwh"), 2), "positive"),
+        ("Final SoC %", num(float(summary.get("final_soc_pct", 0.0)) * 100.0, 1), "positive"),
+        ("Charge intervals", f"{int(summary.get('buy_intervals', 0))}", "accent"),
+        ("Discharge intervals", f"{int(summary.get('sell_intervals', 0))}", "positive"),
+        ("Equivalent cycles", num(float(summary.get("equivalent_discharge_cycles", 0.0)), 3), "accent"),
+        ("Throughput MWh", num(scaled(summary, "total_throughput_mwh", "park_total_throughput_mwh"), 2), "accent"),
     ]
 
-    for start in range(0, len(values), 4):
-        cols = st.columns(4)
-        for col, (label, value) in zip(cols, values[start:start + 4]):
-            col.metric(label, value)
+    headline_kpi_grid(values)
 
 
 def build_table(schedule: pd.DataFrame) -> pd.DataFrame:
@@ -216,6 +290,108 @@ def run_scenario_comparison(base_result: dict, config: dict, lut_files: list[Pat
     return pd.DataFrame(rows)
 
 
+def path_label(path: Path | str | None) -> str:
+    if path is None:
+        return "N/A"
+    return display_path(Path(path))
+
+
+def infer_system_stages(
+    price_file: Path,
+    degradation_lut_file: Path | None,
+    available_lut_files: list[Path],
+) -> list[dict[str, str]]:
+    root = Path(__file__).resolve().parents[1]
+    pybamm_files = [
+        root / "src" / "bess_twin" / "pybamm_only_dod_degradation_lut.py",
+        root / "src" / "bess_twin" / "offline_pybamm_benchmark_calibrator.py",
+    ]
+    oxford_files = sorted((root / "src" / "oxford_data_analysis").glob("build_*.py"))
+    offline_paths = [display_path(path) for path in pybamm_files if path.exists()]
+    if oxford_files:
+        offline_paths.append("src/oxford_data_analysis/build_*.py")
+
+    lut_path = degradation_lut_file or default_lut_for_source("pybamm_only", available_lut_files)
+    return [
+        {
+            "title": "Market Price Signal",
+            "kind": "Data",
+            "tone": "runtime",
+        },
+        {
+            "title": "Asset Configuration",
+            "kind": "Config",
+            "tone": "runtime",
+        },
+        {
+            "title": "Offline Degradation Layer",
+            "kind": "Offline model",
+            "tone": "offline",
+        },
+        {
+            "title": "Optimizer Cost Curve",
+            "kind": "Runtime input",
+            "tone": "runtime",
+        },
+        {
+            "title": "MILP Dispatch Engine",
+            "kind": "Optimizer",
+            "tone": "runtime",
+        },
+        {
+            "title": "Schedule, KPIs, Dashboard",
+            "kind": "Output",
+            "tone": "output",
+        },
+    ]
+
+
+def safe_duration(params: dict) -> float:
+    power = float(params.get("p_max", 0.0))
+    energy = float(params.get("e_max", 0.0))
+    return energy / power if power > 0 else 0.0
+
+
+def render_overview_kpis(summary: dict) -> None:
+    intervals = int(summary.get("intervals", 0) or 0)
+    active = int(summary.get("buy_intervals", 0) or 0) + int(summary.get("sell_intervals", 0) or 0)
+    utilization = f"{100.0 * active / intervals:.1f}%" if intervals else "N/A"
+    net_profit = scaled(summary, "net_profit_eur", "park_net_profit_eur")
+    items = [
+        ("Net profit", f"EUR {net_profit:,.0f}", "positive" if net_profit >= 0 else "negative"),
+        ("Revenue", f"EUR {scaled(summary, 'gross_revenue_eur', 'park_gross_revenue_eur'):,.0f}", "positive"),
+        ("Charging cost", f"EUR {scaled(summary, 'gross_purchase_eur', 'park_gross_purchase_eur'):,.0f}", "negative"),
+        ("Degradation cost", f"EUR {scaled(summary, 'degradation_cost_eur', 'park_degradation_cost_eur'):,.0f}", "negative"),
+        ("Bought energy", f"{scaled(summary, 'buy_energy_mwh', 'park_buy_energy_mwh'):,.2f} MWh", ""),
+        ("Sold energy", f"{scaled(summary, 'sell_energy_mwh', 'park_sell_energy_mwh'):,.2f} MWh", ""),
+        ("Equivalent cycles", f"{float(summary.get('equivalent_discharge_cycles', 0.0)):,.3f}", ""),
+        ("Dispatch utilization", utilization, ""),
+    ]
+    compact_kpi_strip(items)
+
+
+def render_price_preview(price_file: Path, run_mode: str, target_date, year: int) -> None:
+    try:
+        prices = cached_price_series(str(price_file))
+        if run_mode == "Daily":
+            day = pd.Timestamp(target_date).floor("D")
+            preview = prices[prices.index.normalize() == day]
+            title = f"DAM Price Preview - {day.date().isoformat()}"
+        else:
+            year_prices = prices[prices.index.year == int(year)]
+            preview = year_prices.iloc[: min(len(year_prices), 96 * 7)]
+            title = f"DAM Price Preview - first available week of {int(year)}"
+
+        if preview.empty:
+            st.info("No price preview is available for the selected horizon.")
+            return
+        fig, kind = build_price_preview_chart(preview, title)
+        if fig is not None and kind == "plotly":
+            st.plotly_chart(fig, use_container_width=True)
+    except Exception as exc:
+        st.info(f"Price preview unavailable: {exc}")
+
+
 def render_constraint_summary(summary: dict, params: dict, files: dict) -> None:
     terminal = "Equal to initial SoC" if params.get("terminal_soc_mode") == "equal_initial" else "Free terminal SoC"
     items = [
@@ -232,27 +408,7 @@ def render_constraint_summary(summary: dict, params: dict, files: dict) -> None:
     ]
     constraint_grid(items)
 
-
-def data_scarcity_story() -> None:
-    section_title("Why This Works Under Data Scarcity")
-    st.markdown(
-        """
-        <div class="story-panel">
-        <ul>
-          <li>We do not need historical battery operation data for every possible dispatch.</li>
-          <li>The MILP uses known asset constraints: power, energy, SoC limits, and efficiencies.</li>
-          <li>DAM prices provide the market signal for arbitrage decisions.</li>
-          <li>PyBaMM/Oxford-derived LUTs approximate marginal degradation cost offline.</li>
-          <li>The optimizer produces physically feasible schedules even with limited telemetry.</li>
-        </ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 inject_css()
-hero()
 
 price_files = list_price_files()
 lut_files = list_lut_files()
@@ -277,15 +433,25 @@ except DashboardOptimizerError as exc:
     st.stop()
     raise SystemExit
 
-default_date = pd.Timestamp("2025-11-01")
-date_index = dates.index(default_date) if default_date in dates else max(len(dates) - 1, 0)
-target_date = st.sidebar.selectbox(
+if not dates:
+    st.sidebar.error("The selected price file does not contain any valid daily timestamps.")
+    st.stop()
+    raise SystemExit
+
+min_available_date, max_available_date = available_date_bounds(dates)
+available_date_text = f"{min_available_date.isoformat()} to {max_available_date.isoformat()}"
+default_date = selected_date_or_fallback(pd.Timestamp("2025-11-01"), dates)
+target_date = st.sidebar.date_input(
     "Target date",
-    dates,
-    index=date_index,
-    format_func=lambda d: pd.Timestamp(d).date().isoformat(),
+    value=default_date,
+    min_value=min_available_date,
+    max_value=max_available_date,
     disabled=run_mode != "Daily",
+    help=f"Calendar range from selected price data: {available_date_text}.",
 )
+target_date_available = date_is_available(target_date, dates)
+if run_mode == "Daily" and not target_date_available:
+    st.sidebar.error(f"No price data exists for {pd.Timestamp(target_date).date().isoformat()}.")
 
 year_index = years.index(2025) if 2025 in years else max(len(years) - 1, 0)
 year = st.sidebar.selectbox("Year", years, index=year_index, disabled=run_mode != "Annual")
@@ -349,6 +515,8 @@ run_clicked = st.sidebar.button("Run Optimization", type="primary")
 
 if run_clicked:
     errors = validate_parameters(params_override)
+    if run_mode == "Daily" and not target_date_available:
+        errors.append(f"No price data exists for {pd.Timestamp(target_date).date().isoformat()}.")
     if degradation_source != "dummy" and degradation_lut_file is None:
         errors.append("Select a valid degradation LUT file.")
     if errors:
@@ -413,30 +581,58 @@ if st.session_state.get("last_error"):
     st.error(st.session_state["last_error"])
 
 result = st.session_state.get("last_result")
+summary = result["summary_dict"] if result is not None else None
+schedule = result["dispatch_df"] if result is not None else None
+params_used = result["params_used"] if result is not None else None
+
+if result is not None:
+    run_status = str(summary.get("solver_status", result.get("status", "Unknown")))
+    if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
+        horizon_label = f"{int(summary.get('year', year))} annual horizon"
+    else:
+        horizon_label = str(summary.get("date", pd.Timestamp(target_date).date().isoformat()))
+    header_degradation = str(result["files_used"].get("degradation_source", "N/A"))
+    header_price = path_label(result["files_used"].get("price_file"))
+else:
+    run_status = "Not run"
+    horizon_label = (
+        pd.Timestamp(target_date).date().isoformat()
+        if run_mode == "Daily"
+        else f"{int(year)} annual horizon"
+    )
+    header_degradation = (
+        "synthetic dummy curve"
+        if degradation_source == "dummy"
+        else f"{degradation_source} / {path_label(degradation_lut_file)}"
+    )
+    header_price = path_label(price_file)
+
+executive_header(
+    status=run_status,
+    horizon=horizon_label,
+    degradation_source=header_degradation,
+    price_source=header_price,
+)
 
 if result is None:
-    section_title("Demo Workflow")
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Price data", f"{len(dates)} days")
-    col_b.metric("LUT files", f"{len(lut_files)} available")
-    col_c.metric("Default asset", "1 MW / 2 MWh")
-    st.markdown(
-        """
-        <div class="soft-panel">
-        Select a date, choose the degradation source, then run the optimizer. The dashboard will show
-        the dispatch schedule, degradation-aware economics, constraints, downloadable outputs, and
-        what-if scenario comparison.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    section_title("Strategy Overview")
+    system_overview(infer_system_stages(price_file, degradation_lut_file, lut_files))
+
+    section_title("Selected DAM Price Signal")
+    preview_default_date = selected_date_or_fallback(pd.Timestamp(target_date), dates)
+    preview_date = st.date_input(
+        "Preview date",
+        value=preview_default_date,
+        min_value=min_available_date,
+        max_value=max_available_date,
+        help="Changes only the DAM price preview on this landing page.",
     )
-    data_scarcity_story()
+    if date_is_available(preview_date, dates):
+        render_price_preview(price_file, "Daily", preview_date, int(year))
+    else:
+        st.warning(f"No DAM price data exists for {pd.Timestamp(preview_date).date().isoformat()}.")
     st.stop()
     raise SystemExit
-
-summary = result["summary_dict"]
-schedule = result["dispatch_df"]
-params_used = result["params_used"]
 
 for warning in result.get("warnings", []):
     st.warning(warning)
@@ -460,18 +656,11 @@ if dispatch_kind == "plotly":
 else:
     st.pyplot(dispatch_fig, use_container_width=True)
 
-left, right = st.columns([1.05, 0.95])
-with left:
-    section_title("Financial Breakdown")
-    financial_fig, financial_kind = build_financial_chart(summary)
-    if financial_fig is not None and financial_kind == "plotly":
-        st.plotly_chart(financial_fig, use_container_width=True)
-    else:
-        st.info("Install Plotly to see the interactive financial chart.")
-
-with right:
-    section_title("Constraint Summary")
-    render_constraint_summary(summary, params_used, result["files_used"])
+financial_fig, financial_kind = build_financial_chart(summary)
+if financial_fig is not None and financial_kind == "plotly":
+    st.plotly_chart(financial_fig, use_container_width=True)
+else:
+    st.info("Install Plotly to see the interactive financial chart.")
 
 section_title("Scenario Comparison")
 comparison = st.session_state.get("scenario_comparison")
@@ -508,5 +697,3 @@ download_b.download_button(
     file_name="bess_summary_kpis.csv",
     mime="text/csv",
 )
-
-data_scarcity_story()

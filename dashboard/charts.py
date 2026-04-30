@@ -26,6 +26,16 @@ BLUE = "#60a5fa"
 AMBER = "#f59e0b"
 
 
+def _operation_from_row(row) -> str:
+    buy_mw = float(getattr(row, "p_buy_mw", 0.0) or 0.0)
+    sell_mw = float(getattr(row, "p_sell_mw", 0.0) or 0.0)
+    if sell_mw > 1e-7:
+        return "sell"
+    if buy_mw > 1e-7:
+        return "buy"
+    return str(getattr(row, "operation", "idle")).lower()
+
+
 def _dark_layout(fig, height: int):
     fig.update_layout(
         height=height,
@@ -65,16 +75,21 @@ def build_dispatch_chart(schedule: pd.DataFrame, params: dict, title: str = "Dai
     )
 
     for row in df.itertuples(index=False):
-        if row.operation not in {"buy", "sell"}:
+        operation = _operation_from_row(row)
+        if operation not in {"buy", "sell"}:
             continue
-        color = "rgba(34, 197, 94, 0.16)" if row.operation == "buy" else "rgba(239, 68, 68, 0.16)"
-        fig.add_vrect(
+        color = "rgba(34, 197, 94, 0.24)" if operation == "buy" else "rgba(239, 68, 68, 0.24)"
+        fig.add_shape(
+            type="rect",
             x0=row.timestamp,
             x1=row.timestamp + pd.Timedelta(minutes=dt_minutes),
+            y0=0,
+            y1=1,
+            xref="x",
+            yref="y domain",
             fillcolor=color,
             line_width=0,
-            row=1,
-            col=1,
+            layer="below",
         )
 
     fig.add_trace(
@@ -188,7 +203,14 @@ def build_financial_chart(summary: dict):
             totals={"marker": {"color": BLUE}},
         )
     )
-    fig.update_layout(title={"text": "Financial Breakdown", "x": 0.01})
+    fig.update_layout(
+        title={
+            "text": "Financial Breakdown",
+            "x": 0.5,
+            "xanchor": "center",
+            "font": {"size": 19, "color": TEXT},
+        }
+    )
     fig.update_yaxes(title_text="EUR")
     return _dark_layout(fig, height=410), "plotly"
 
@@ -225,6 +247,32 @@ def build_scenario_chart(comparison: pd.DataFrame):
     )
     fig.update_yaxes(title_text="EUR")
     return _dark_layout(fig, height=430), "plotly"
+
+
+def build_price_preview_chart(prices: pd.Series, title: str = "DAM Price Preview"):
+    if not PLOTLY_AVAILABLE:
+        return None, "matplotlib"
+
+    preview = prices.dropna().copy()
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=preview.index,
+            y=preview.values,
+            mode="lines",
+            name="DAM price",
+            line={"color": "#e2e8f0", "width": 2.0},
+            fill="tozeroy",
+            fillcolor="rgba(96, 165, 250, 0.10)",
+        )
+    )
+    fig.update_layout(
+        title={"text": title, "x": 0.01},
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_yaxes(title_text="EUR/MWh")
+    return _dark_layout(fig, height=280), "plotly"
 
 
 def build_dispatch_chart_matplotlib(schedule: pd.DataFrame, params: dict, title: str):
