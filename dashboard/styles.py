@@ -35,14 +35,21 @@ def inject_css() -> None:
             color: #e5eefb;
         }
 
-        header[data-testid="stHeader"],
-        div[data-testid="stToolbar"],
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            height: 2.75rem !important;
+        }
+
         div[data-testid="stDecoration"],
         div[data-testid="stStatusWidget"],
         div[data-testid="stAppDeployButton"] {
             display: none !important;
             visibility: hidden !important;
             height: 0 !important;
+        }
+
+        div[data-testid="stToolbar"] {
+            background: transparent !important;
         }
 
         #MainMenu,
