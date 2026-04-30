@@ -23,6 +23,7 @@ python3 -m streamlit run dashboard/app.py
 - Three-panel dispatch view: DAM price with buy/sell windows, charge/discharge power bars, and SoC trajectory.
 - Financial waterfall, constraint summary, clean dispatch table, and CSV downloads.
 - Daily scenario comparison for degradation assumptions, one-hour/four-hour duration cases, and a no-degradation comparison case.
+- A simple `Forecast Optimizer` page that builds the next-day DAM forecast, writes the optimizer-compatible forecast CSV, and solves the daily BESS dispatch on the forecast prices.
 
 ## Required Files
 
@@ -52,3 +53,10 @@ energy,temperature_c,deg_cost_eur_per_MWh_throughput
 4. Inspect the dispatch chart: charge at low prices, discharge at high prices, idle when spreads are too small.
 5. Compare scenarios.
 6. Download the schedule and summary KPIs.
+
+## Forecast Workflow
+
+1. Open `Forecast Optimizer` from the Streamlit page switcher.
+2. Select the historical DAM price file and delivery date.
+3. Click `Run`.
+4. Inspect the basic KPIs, forecast-vs-real price chart, and dispatch table.
