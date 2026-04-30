@@ -71,7 +71,6 @@ def build_dispatch_chart(schedule: pd.DataFrame, params: dict, title: str = "Dai
         shared_xaxes=True,
         vertical_spacing=0.055,
         row_heights=[0.43, 0.30, 0.27],
-        subplot_titles=("DAM price and dispatch windows", "Power schedule", "State of charge"),
     )
 
     for row in df.itertuples(index=False):
@@ -170,13 +169,35 @@ def build_dispatch_chart(schedule: pd.DataFrame, params: dict, title: str = "Dai
     fig.update_layout(
         title={
             "text": title,
-            "x": 0.01,
+            "x": 0.5,
+            "xanchor": "center",
             "font": {"size": 19, "color": TEXT},
         },
         barmode="relative",
         hovermode="x unified",
+        margin={"l": 52, "r": 26, "t": 118, "b": 36},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.025,
+            "xanchor": "center",
+            "x": 0.5,
+            "font": {"color": MUTED},
+        },
     )
-    return _dark_layout(fig, height=760), "plotly"
+    fig = _dark_layout(fig, height=760)
+    fig.update_layout(
+        margin={"l": 52, "r": 26, "t": 118, "b": 36},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.025,
+            "xanchor": "center",
+            "x": 0.5,
+            "font": {"color": MUTED},
+        },
+    )
+    return fig, "plotly"
 
 
 def build_financial_chart(summary: dict):
@@ -243,7 +264,13 @@ def build_model_benchmark_chart(comparison: pd.DataFrame):
         "perfect": GREEN,
         "naive": AMBER,
     }
+    short_label_map = {
+        "degradation_aware_milp": "Selected MILP",
+        "perfect": "Perfect MILP",
+        "naive": "EMA heuristic",
+    }
     bar_colors = model_ids.map(color_map).fillna(BLUE)
+    chart_labels = model_ids.map(short_label_map).fillna(available["Model"])
     annotations = []
     for _, row in available.iterrows():
         delta = row.get("Delta vs degradation-aware MILP EUR")
@@ -255,7 +282,7 @@ def build_model_benchmark_chart(comparison: pd.DataFrame):
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
-            x=available["Model"],
+            x=chart_labels,
             y=available["Net profit EUR"],
             text=annotations,
             textposition="outside",
@@ -268,7 +295,7 @@ def build_model_benchmark_chart(comparison: pd.DataFrame):
         y=base_profit,
         line_dash="dash",
         line_color="rgba(226, 232, 240, 0.45)",
-        annotation_text="Degradation-aware MILP baseline",
+        annotation_text="Selected baseline",
         annotation_position="top left",
     )
     fig.update_layout(
@@ -279,7 +306,7 @@ def build_model_benchmark_chart(comparison: pd.DataFrame):
             "font": {"size": 19, "color": TEXT},
         },
         showlegend=False,
-        xaxis_tickangle=-8,
+        xaxis_tickangle=0,
     )
     fig.update_yaxes(title_text="EUR")
     return _dark_layout(fig, height=430), "plotly"

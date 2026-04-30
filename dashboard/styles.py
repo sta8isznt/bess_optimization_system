@@ -154,6 +154,23 @@ def inject_css() -> None:
             color: #93c5fd;
         }
 
+        .headline-kpi-grid.primary-kpi-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .headline-kpi-subvalue {
+            margin-top: 0.64rem;
+            color: #9fb0c8;
+            font-size: 0.83rem;
+            line-height: 1.25;
+            font-weight: 700;
+        }
+
+        .headline-kpi-subvalue strong {
+            color: #e5eefb;
+            font-weight: 850;
+        }
+
         .hero {
             padding: 1.1rem 1.2rem 1.05rem 1.2rem;
             border: 1px solid rgba(96, 165, 250, 0.24);
@@ -526,6 +543,10 @@ def inject_css() -> None:
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
 
+            .headline-kpi-grid.primary-kpi-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
             .team-logo-slot {
                 height: 102px;
             }
@@ -543,6 +564,10 @@ def inject_css() -> None:
 
         @media (max-width: 720px) {
             .headline-kpi-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .headline-kpi-grid.primary-kpi-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -772,6 +797,24 @@ def headline_kpi_grid(items: list[tuple[str, str, str]]) -> None:
             "</div>"
         )
     st.markdown(f'<div class="headline-kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+def primary_kpi_grid(items: list[tuple[str, str, str, str]]) -> None:
+    allowed_tones = {"positive", "negative", "accent", "neutral"}
+    cards = []
+    for label, value, secondary, tone in items:
+        tone_class = tone if tone in allowed_tones else "neutral"
+        cards.append(
+            f'<div class="headline-kpi-card {html.escape(tone_class)}">'
+            f'<div class="headline-kpi-label">{html.escape(label)}</div>'
+            f'<div class="headline-kpi-value {html.escape(tone_class)}">{html.escape(value)}</div>'
+            f'<div class="headline-kpi-subvalue">{html.escape(secondary)}</div>'
+            "</div>"
+        )
+    st.markdown(
+        f'<div class="headline-kpi-grid primary-kpi-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def compact_kpi_strip(items: list[tuple[str, str, str]]) -> None:

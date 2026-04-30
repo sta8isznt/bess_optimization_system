@@ -40,6 +40,7 @@ try:
         executive_header,
         headline_kpi_grid,
         inject_css,
+        primary_kpi_grid,
         section_title,
         system_overview,
     )
@@ -70,6 +71,7 @@ except ImportError:
         executive_header,
         headline_kpi_grid,
         inject_css,
+        primary_kpi_grid,
         section_title,
         system_overview,
     )
@@ -130,25 +132,84 @@ def scaled(summary: dict, base_key: str, park_key: str) -> float:
     return float(summary.get(base_key, 0.0))
 
 
-def render_kpis(summary: dict) -> None:
+def eur_per_mwh_discharged(value: float, discharged_mwh: float) -> str:
+    if abs(discharged_mwh) < 1e-12:
+        return "N/A EUR/MWh discharged"
+    return f"{value / discharged_mwh:,.2f} EUR/MWh discharged"
+
+
+def render_result_kpis(summary: dict, run_mode: str) -> None:
     solver_status = str(summary.get("solver_status", "Unknown"))
     net_profit = scaled(summary, "net_profit_eur", "park_net_profit_eur")
-    values = [
-        ("Solver status", solver_status, "positive" if solver_status.lower() == "optimal" else "negative"),
-        ("Net profit EUR", eur(net_profit), "positive" if net_profit >= 0 else "negative"),
-        ("Gross revenue EUR", eur(scaled(summary, "gross_revenue_eur", "park_gross_revenue_eur")), "positive"),
-        ("Purchase cost EUR", eur(scaled(summary, "gross_purchase_eur", "park_gross_purchase_eur")), "negative"),
-        ("Degradation cost EUR", eur(scaled(summary, "degradation_cost_eur", "park_degradation_cost_eur")), "negative"),
-        ("Bought energy MWh", num(scaled(summary, "buy_energy_mwh", "park_buy_energy_mwh"), 2), "accent"),
-        ("Sold energy MWh", num(scaled(summary, "sell_energy_mwh", "park_sell_energy_mwh"), 2), "positive"),
-        ("Final SoC %", num(float(summary.get("final_soc_pct", 0.0)) * 100.0, 1), "positive"),
-        ("Charge intervals", f"{int(summary.get('buy_intervals', 0))}", "accent"),
-        ("Discharge intervals", f"{int(summary.get('sell_intervals', 0))}", "positive"),
-        ("Equivalent cycles", num(float(summary.get("equivalent_discharge_cycles", 0.0)), 3), "accent"),
-        ("Throughput MWh", num(scaled(summary, "total_throughput_mwh", "park_total_throughput_mwh"), 2), "accent"),
-    ]
+    degradation_cost = scaled(summary, "degradation_cost_eur", "park_degradation_cost_eur")
+    discharged_mwh = scaled(summary, "sell_energy_mwh", "park_sell_energy_mwh")
+    cycles = float(summary.get("equivalent_discharge_cycles", 0.0))
+    cycles_label = "cycles/year" if run_mode == "Annual" else "cycles/day"
 
-    headline_kpi_grid(values)
+    primary_kpi_grid(
+        [
+            (
+                "Net Profit",
+                f"EUR {eur(net_profit)}",
+                eur_per_mwh_discharged(net_profit, discharged_mwh),
+                "positive" if net_profit >= 0 else "negative",
+            ),
+            (
+                "Degradation Cost",
+                f"EUR {eur(degradation_cost)}",
+                eur_per_mwh_discharged(degradation_cost, discharged_mwh),
+                "negative",
+            ),
+            (
+                "Equivalent Full Cycles",
+                num(cycles, 3),
+                cycles_label,
+                "accent",
+            ),
+        ]
+    )
+
+    with st.expander("Show full statistics", expanded=False):
+        headline_kpi_grid(
+            [
+                ("Solver status", solver_status, "positive" if solver_status.lower() == "optimal" else "negative"),
+                ("Gross revenue EUR", eur(scaled(summary, "gross_revenue_eur", "park_gross_revenue_eur")), "positive"),
+                ("Purchase cost EUR", eur(scaled(summary, "gross_purchase_eur", "park_gross_purchase_eur")), "negative"),
+                ("Bought energy MWh", num(scaled(summary, "buy_energy_mwh", "park_buy_energy_mwh"), 2), "accent"),
+                ("Sold energy MWh", num(discharged_mwh, 2), "positive"),
+                ("Final SoC %", num(float(summary.get("final_soc_pct", 0.0)) * 100.0, 1), "positive"),
+                ("Throughput MWh", num(scaled(summary, "total_throughput_mwh", "park_total_throughput_mwh"), 2), "accent"),
+                ("Charge intervals", f"{int(summary.get('buy_intervals', 0))}", "accent"),
+                ("Discharge intervals", f"{int(summary.get('sell_intervals', 0))}", "positive"),
+            ]
+        )
+
+
+def build_benchmark_display_table(comparison: pd.DataFrame) -> pd.DataFrame:
+    display = comparison.copy()
+    net_profit = pd.to_numeric(display["Net profit EUR"], errors="coerce")
+    sold_mwh = pd.to_numeric(display["Sold MWh"], errors="coerce")
+    degradation_cost = pd.to_numeric(display["Degradation cost EUR"], errors="coerce")
+    display["Net profit EUR/MWh"] = net_profit.div(sold_mwh.where(sold_mwh.abs() > 1e-12))
+    display["Degradation cost EUR/MWh"] = degradation_cost.div(sold_mwh.where(sold_mwh.abs() > 1e-12))
+    display["Δ vs selected %"] = pd.to_numeric(
+        display["Delta vs degradation-aware MILP %"],
+        errors="coerce",
+    )
+
+    display = display[
+        [
+            "Model",
+            "Net profit EUR",
+            "Net profit EUR/MWh",
+            "Δ vs selected %",
+            "Degradation cost EUR/MWh",
+            "Equivalent cycles",
+        ]
+    ].copy()
+    numeric_cols = display.select_dtypes(include=["float", "int"]).columns
+    display[numeric_cols] = display[numeric_cols].round(3)
+    return display
 
 
 def build_table(schedule: pd.DataFrame) -> pd.DataFrame:
@@ -185,6 +246,28 @@ def build_table(schedule: pd.DataFrame) -> pd.DataFrame:
     )
     numeric_cols = table.select_dtypes(include=["float", "int"]).columns
     table[numeric_cols] = table[numeric_cols].round(4)
+    return table
+
+
+def build_minimal_dispatch_table(schedule: pd.DataFrame, epsilon: float = 1e-6) -> pd.DataFrame:
+    p_buy = pd.to_numeric(schedule["p_buy_mw"], errors="coerce").fillna(0.0)
+    p_sell = pd.to_numeric(schedule["p_sell_mw"], errors="coerce").fillna(0.0)
+    buy_active = p_buy > epsilon
+    sell_active = p_sell > epsilon
+
+    actions = pd.Series("HOLD", index=schedule.index)
+    actions[buy_active & ~sell_active] = "BUY"
+    actions[sell_active & ~buy_active] = "SELL"
+    actions[buy_active & sell_active] = "CONFLICT"
+
+    table = pd.DataFrame(
+        {
+            "Timestamp": schedule["timestamp"],
+            "DAM Price EUR/MWh": pd.to_numeric(schedule["price_eur_mwh"], errors="coerce"),
+            "Dispatch Action": actions,
+        }
+    )
+    table["DAM Price EUR/MWh"] = table["DAM Price EUR/MWh"].round(4)
     return table
 
 
@@ -319,9 +402,7 @@ if not price_files:
 st.sidebar.title("Optimizer Controls")
 run_mode = st.sidebar.radio("Run mode", ["Daily", "Annual"], index=0, horizontal=True)
 
-price_options = {display_path(path): path for path in price_files}
-price_label = st.sidebar.selectbox("Price input file", list(price_options.keys()))
-price_file = price_options[price_label]
+price_file = price_files[0]
 
 try:
     dates = cached_dates(str(price_file))
@@ -355,10 +436,20 @@ year_index = years.index(2025) if 2025 in years else max(len(years) - 1, 0)
 year = st.sidebar.selectbox("Year", years, index=year_index, disabled=run_mode != "Annual")
 
 st.sidebar.divider()
-power_mw = st.sidebar.number_input("Battery power in MW", min_value=0.05, max_value=500.0, value=1.0, step=0.05)
-energy_mwh = st.sidebar.number_input("Battery energy in MWh", min_value=0.05, max_value=2000.0, value=2.0, step=0.05)
-duration_h = energy_mwh / power_mw if power_mw else 0.0
-st.sidebar.caption(f"Duration: {duration_h:.2f} hours")
+installed_capacity_mw = st.sidebar.number_input(
+    "Installed capacity MW",
+    min_value=0.05,
+    max_value=5000.0,
+    value=50.0,
+    step=1.0,
+)
+power_mw = 1.0
+duration_h = 2.0
+energy_mwh = power_mw * duration_h
+scale_capacity_mw = float(installed_capacity_mw)
+st.sidebar.caption(
+    f"Assumption: 2-hour battery duration, {installed_capacity_mw * duration_h:,.0f} MWh installed energy."
+)
 
 eta_ch = st.sidebar.slider("Charge efficiency", min_value=0.50, max_value=1.00, value=0.92, step=0.01)
 eta_dis = st.sidebar.slider("Discharge efficiency", min_value=0.50, max_value=1.00, value=0.92, step=0.01)
@@ -380,33 +471,11 @@ params_override = {
     "terminal_soc_mode": terminal_soc_mode,
 }
 
-st.sidebar.divider()
-degradation_source = st.sidebar.selectbox("Degradation source", ["pybamm_only", "lut", "dummy"], index=0)
-lut_options = {display_path(path): path for path in lut_files}
-preferred_lut = default_lut_for_source(degradation_source, lut_files)
-lut_labels = list(lut_options.keys())
-lut_index = lut_labels.index(display_path(preferred_lut)) if preferred_lut is not None and display_path(preferred_lut) in lut_labels else 0
-selected_lut_label = st.sidebar.selectbox(
-    "Degradation LUT file",
-    lut_labels if lut_labels else ["No LUT files found"],
-    index=lut_index if lut_labels else 0,
-    disabled=degradation_source == "dummy" or not lut_labels,
-)
-degradation_lut_file = None if degradation_source == "dummy" or not lut_labels else lut_options[selected_lut_label]
-temperature_c = st.sidebar.number_input("Temperature assumption C", min_value=-20.0, max_value=80.0, value=25.0, step=1.0)
-
-st.sidebar.divider()
-scale_to_capacity = st.sidebar.checkbox("Scale to installed capacity", value=True)
-installed_capacity_mw = st.sidebar.number_input(
-    "Installed capacity MW",
-    min_value=0.05,
-    max_value=5000.0,
-    value=50.0,
-    step=1.0,
-    disabled=not scale_to_capacity,
-)
-scale_capacity_mw = float(installed_capacity_mw) if scale_to_capacity else None
-st.sidebar.info("Solver: CBC through PuLP")
+degradation_source = "pybamm_only"
+degradation_lut_file = default_lut_for_source(degradation_source, lut_files)
+if degradation_lut_file is None:
+    st.sidebar.error("PyBaMM degradation LUT was not found.")
+temperature_c = 25.0
 
 run_clicked = st.sidebar.button("Run Optimization", type="primary")
 
@@ -414,8 +483,8 @@ if run_clicked:
     errors = validate_parameters(params_override)
     if run_mode == "Daily" and not target_date_available:
         errors.append(f"No price data exists for {pd.Timestamp(target_date).date().isoformat()}.")
-    if degradation_source != "dummy" and degradation_lut_file is None:
-        errors.append("Select a valid degradation LUT file.")
+    if degradation_lut_file is None:
+        errors.append("PyBaMM degradation LUT file is missing.")
     if errors:
         st.session_state["last_error"] = "\n".join(errors)
         st.session_state.pop("last_result", None)
@@ -487,9 +556,7 @@ else:
         else f"{int(year)} annual horizon"
     )
     header_degradation = (
-        "synthetic dummy curve"
-        if degradation_source == "dummy"
-        else f"{degradation_source} / {path_label(degradation_lut_file)}"
+        f"PyBaMM LUT / {path_label(degradation_lut_file)}"
     )
     header_price = path_label(price_file)
 
@@ -524,7 +591,6 @@ for warning in result.get("warnings", []):
     st.warning(warning)
 
 if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
-    st.info("Annual mode solved the full year. The dispatch chart below shows the first optimized day for readability.")
     first_day = schedule["timestamp"].dt.normalize().min()
     chart_schedule = schedule[schedule["timestamp"].dt.normalize() == first_day].copy()
     chart_title = f"Annual Run Dispatch Excerpt - {first_day.date().isoformat()}"
@@ -533,9 +599,9 @@ else:
     chart_title = f"Daily Dispatch - {summary.get('date', '')}"
 
 section_title("Headline KPIs")
-render_kpis(summary)
+render_result_kpis(summary, st.session_state.get("last_config", {}).get("run_mode", "Daily"))
+st.caption("The above results are evaluated at 25 degrees Celsius, assuming an active cooling system.")
 
-section_title("Dispatch Schedule")
 dispatch_fig, dispatch_kind = build_dispatch_chart(chart_schedule, params_used, chart_title)
 if dispatch_kind == "plotly":
     st.plotly_chart(dispatch_fig, use_container_width=True)
@@ -553,30 +619,23 @@ comparison = result.get("benchmark_comparison_df")
 if comparison is None or comparison.empty:
     st.info("Benchmark comparison is unavailable for this run.")
 else:
-    display_comparison = comparison.drop(columns=["model_id", "available"], errors="ignore").copy()
-    numeric_cols = display_comparison.select_dtypes(include=["float", "int"]).columns
-    display_comparison[numeric_cols] = display_comparison[numeric_cols].round(3)
-    st.dataframe(display_comparison, use_container_width=True, hide_index=True)
+    st.dataframe(build_benchmark_display_table(comparison), use_container_width=True, hide_index=True)
     benchmark_fig, benchmark_kind = build_model_benchmark_chart(comparison)
     if benchmark_fig is not None and benchmark_kind == "plotly":
         st.plotly_chart(benchmark_fig, use_container_width=True)
 
 section_title("Dispatch Table")
 dispatch_table = build_table(schedule)
-st.dataframe(dispatch_table, use_container_width=True, hide_index=True, height=410)
+minimal_dispatch_table = build_minimal_dispatch_table(schedule)
+st.dataframe(minimal_dispatch_table, use_container_width=True, hide_index=True, height=320)
+
+with st.expander("Show full dispatch details", expanded=False):
+    st.dataframe(dispatch_table, use_container_width=True, hide_index=True, height=410)
 
 csv_schedule = dispatch_table.to_csv(index=False).encode("utf-8")
-csv_summary = pd.DataFrame([summary]).to_csv(index=False).encode("utf-8")
-download_a, download_b = st.columns(2)
-download_a.download_button(
+st.download_button(
     "Download dispatch schedule CSV",
     csv_schedule,
     file_name="bess_dispatch_schedule.csv",
-    mime="text/csv",
-)
-download_b.download_button(
-    "Download summary KPIs CSV",
-    csv_summary,
-    file_name="bess_summary_kpis.csv",
     mime="text/csv",
 )
