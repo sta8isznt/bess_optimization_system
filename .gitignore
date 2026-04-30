@@ -95,3 +95,5 @@ src/bess_twin/training_statistics/
 /pybamm_only_dod_degradation_lut.csv
 /pybamm_only_dod_report.md
 /pybamm_only_dod_manifest.json
+
+reports/
