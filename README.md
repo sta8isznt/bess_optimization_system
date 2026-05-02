@@ -5,13 +5,16 @@ and simple backtesting on 15-minute day-ahead market prices.
 
 ## Repository Layout
 
-- `src/`: battery digital-twin, data-processing, and utility code.
-- `optimization/`: MILP optimizer, backtest runners, price signals, and LUT input.
-- `scripts/`: command-line entry points for supporting data/LUT generation.
-- `data/oxford/`: Oxford battery dataset input files used by the degradation pipeline.
+- `src/bess_optimization/`: forecasting, PyBaMM LUT generation, optimization,
+  settlement, reporting, services, and CLI implementations.
+- `dashboard/`: Streamlit UI. The visual layer stays here; backend logic calls
+  `src/bess_optimization`.
+- `data/cleaned_data/`: stable optimizer input CSVs.
+- `outputs/`: generated local outputs, ignored by git.
 
 Generated outputs are intentionally not tracked. Recreate them by running the
-scripts, and keep the GitHub repository focused on source and stable input data.
+package CLIs, and keep the GitHub repository focused on source and stable input
+data.
 
 ## Setup
 
@@ -23,8 +26,17 @@ make install
 
 ## Common Commands
 
-Edit `RUN_MODE` near the top of `optimization/run_optimization_backtest.py`
-to choose `"daily"` or `"annual"`, then run that file from the IDE.
+Run the default daily optimization:
+
+```bash
+python -m bess_optimization.cli.run_engine
+```
+
+Run tests:
+
+```bash
+make test
+```
 
 ## Greek DAM 15-Minute Price Forecasting
 
@@ -42,10 +54,10 @@ should not be mixed in unless you explicitly run with
 Example:
 
 ```bash
-python3 scripts/run_dam_15min_forecast.py \
-  --input-file optimization/data/cleaned_data/price_signals_15m.csv \
+python -m bess_optimization.cli.dam_15min_forecast \
+  --input-file data/cleaned_data/price_signals_15m.csv \
   --target-date 2026-05-01 \
-  --output-file optimization/data/forecasts/dam_15min_forecast_next_day.csv \
+  --output-file outputs/forecasts/dam_15min_forecast_next_day.csv \
   --window-days 30 \
   --model seasonal
 ```
@@ -80,19 +92,35 @@ forecast_reason
 The script also writes an optimizer-compatible CSV beside it:
 
 ```text
-optimization/data/forecasts/dam_15min_forecast_next_day_optimizer_input.csv
+outputs/forecasts/dam_15min_forecast_next_day_optimizer_input.csv
 ```
 
 Run the lightweight synthetic self-check with:
 
 ```bash
-python3 scripts/run_dam_15min_forecast.py --self-check
+python -m bess_optimization.cli.dam_15min_forecast --self-check
 ```
 
 Optionally backtest the baseline on the last complete historical days:
 
 ```bash
-python3 scripts/run_dam_15min_forecast.py --backtest-days 7
+python -m bess_optimization.cli.dam_15min_forecast --backtest-days 7
+```
+
+Run the forecast-driven dispatch backtest:
+
+```bash
+python -m bess_optimization.cli.forecast_strategy_backtest \
+  --input-file data/cleaned_data/price_signals_15m.csv \
+  --backtest-days 30 \
+  --window-days 30 \
+  --degradation-source pybamm_only
+```
+
+Build a PyBaMM-only LUT offline:
+
+```bash
+python -m bess_optimization.degradation.pybamm_lut
 ```
 
 ## Generated Outputs
@@ -100,11 +128,10 @@ python3 scripts/run_dam_15min_forecast.py --backtest-days 7
 These paths are local artefacts and are ignored by git:
 
 - `data/produced_data/`
-- `optimization/daily_outputs/`
-- `optimization/annual_outputs/`
-- `optimization/Results_*/`
+- `outputs/`
 
 The tracked optimizer inputs are:
 
-- `optimization/data/cleaned_data/price_signals_15m.csv`
-- `optimization/data/cleaned_data/Reduced_LUT_Final.csv`
+- `data/cleaned_data/price_signals_15m.csv`
+- `data/cleaned_data/Reduced_LUT_Final.csv`
+- `data/cleaned_data/Reduced_LUT_PyBaMM_Only.csv`

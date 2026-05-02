@@ -11,7 +11,8 @@ import streamlit as st
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = DASHBOARD_DIR.parent
-for candidate in (DASHBOARD_DIR, PROJECT_ROOT):
+SRC_ROOT = PROJECT_ROOT / "src"
+for candidate in (DASHBOARD_DIR, PROJECT_ROOT, SRC_ROOT):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
@@ -24,13 +25,16 @@ from optimizer_adapter import (  # noqa: E402
     run_daily_optimization,
     validate_parameters,
 )
-from optimization.forecasting.dam_15min_forecast import (  # noqa: E402
+from bess_optimization.forecasting.dam_15min_forecast import (  # noqa: E402
     DEFAULT_FORECAST_OUTPUT,
     ForecastingError,
     forecast_next_day,
     load_price_history,
     utc_created_at,
     write_forecast_outputs,
+)
+from bess_optimization.settlement.cashflows import (  # noqa: E402
+    settle_schedule_on_actual_prices,
 )
 from styles import inject_css, primary_kpi_grid, section_title  # noqa: E402
 
@@ -148,24 +152,10 @@ def settled_schedule(schedule: pd.DataFrame, actual: pd.Series | None) -> pd.Dat
     settled["forecast_interval_profit_eur"] = settled["interval_profit_eur"]
     if actual is None:
         return settled
-
-    aligned = actual.reindex(settled["timestamp"])
-    if aligned.isna().any():
+    try:
+        return settle_schedule_on_actual_prices(settled, actual)
+    except ValueError:
         return settled
-
-    settled["actual_price_eur_mwh"] = aligned.to_numpy(dtype=float)
-    settled["actual_gross_revenue_eur"] = (
-        settled["actual_price_eur_mwh"] * settled["sell_energy_mwh"]
-    )
-    settled["actual_gross_purchase_eur"] = (
-        settled["actual_price_eur_mwh"] * settled["buy_energy_mwh"]
-    )
-    settled["actual_interval_profit_eur"] = (
-        settled["actual_gross_revenue_eur"]
-        - settled["actual_gross_purchase_eur"]
-        - settled["degradation_cost_eur"]
-    )
-    return settled
 
 
 def compact_dispatch_table(schedule: pd.DataFrame, actual: pd.Series | None) -> pd.DataFrame:
@@ -307,7 +297,7 @@ price_files = list_price_files()
 lut_files = list_lut_files()
 
 if not price_files:
-    st.error("No historical price CSV files were found under optimization/data/cleaned_data.")
+    st.error("No historical price CSV files were found under data/cleaned_data.")
     st.stop()
 
 st.sidebar.title("Inputs")

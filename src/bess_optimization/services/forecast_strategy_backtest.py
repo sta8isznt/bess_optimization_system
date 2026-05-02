@@ -18,32 +18,34 @@ import numpy as np
 import pandas as pd
 import pulp as pl
 
-from optimization.backtest_utils import (
-    build_dummy_cost_curve,
+from bess_optimization.io.degradation import load_degradation_curve as load_shared_degradation_curve
+from bess_optimization.models import ForecastBacktestResult as PublicForecastBacktestResult
+from bess_optimization.optimization.backtest_utils import (
     build_schedule,
     safe_divide,
     summarize,
     validate_schedule,
 )
-from optimization.backtesting_loaders import (
-    DEFAULT_DEGRADATION_LUT_PATH,
-    DEFAULT_PRICE_SIGNALS_PATH,
-    DEFAULT_PYBAMM_ONLY_LUT_PATH,
-    load_degradation_lut_curve,
-)
-from optimization.config import params as BASE_PARAMS
-from optimization.engine import bess_order
-from optimization.forecasting.dam_15min_forecast import (
+from bess_optimization.optimization.config import params as BASE_PARAMS
+from bess_optimization.optimization.engine import bess_order
+from bess_optimization.forecasting.dam_15min_forecast import (
     EXPECTED_PERIODS_PER_DAY,
     ForecastingError,
     forecast_next_day,
     load_price_history,
     utc_created_at,
 )
+from bess_optimization.paths import (
+    DEFAULT_DEGRADATION_LUT_PATH,
+    DEFAULT_PRICE_SIGNALS_PATH,
+    DEFAULT_PYBAMM_ONLY_LUT_PATH,
+    FORECAST_BACKTEST_OUTPUT_DIR,
+)
+from bess_optimization.settlement.cashflows import settle_schedule_on_actual_prices
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = BASE_DIR / "forecast_backtest_outputs"
+DEFAULT_OUTPUT_DIR = FORECAST_BACKTEST_OUTPUT_DIR
 DEFAULT_BACKTEST_DAYS = 30
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_INSTALLED_CAPACITY_MW = 50.0
@@ -53,7 +55,7 @@ PROFIT_TOLERANCE_EUR = 1e-7
 
 
 @dataclass(frozen=True)
-class ForecastStrategyBacktestResult:
+class ForecastStrategyBacktestResult(PublicForecastBacktestResult):
     """Container for forecast strategy backtest outputs."""
 
     interval_schedule: pd.DataFrame
@@ -81,29 +83,14 @@ def load_degradation_curve(
     """Load the same degradation-curve inputs expected by the optimizer."""
 
     source = str(source).strip().lower()
-    if source == "lut":
-        energy_points, cost_points = load_degradation_lut_curve(
-            csv_path=lut_csv,
-            temperature_c=temperature_c,
-        )
-        return energy_points, cost_points, f"{lut_csv.name} at {temperature_c:g}C"
-
-    if source == "pybamm_only":
-        energy_points, cost_points = load_degradation_lut_curve(
-            csv_path=pybamm_only_lut_csv,
-            temperature_c=temperature_c,
-        )
-        return (
-            energy_points,
-            cost_points,
-            f"{pybamm_only_lut_csv.name} at {temperature_c:g}C",
-        )
-
-    if source == "dummy":
-        energy_points, cost_points = build_dummy_cost_curve(test_params)
-        return energy_points, cost_points, "synthetic dummy degradation curve"
-
-    raise ValueError('degradation_source must be "lut", "pybamm_only", or "dummy".')
+    lut_file = pybamm_only_lut_csv if source == "pybamm_only" else lut_csv
+    curve = load_shared_degradation_curve(
+        source=source,
+        params=test_params,
+        lut_file=lut_file,
+        temperature_c=temperature_c,
+    )
+    return curve.energy_points, curve.cost_points, curve.source_label
 
 
 def _with_date(frame: pd.DataFrame) -> pd.DataFrame:
@@ -237,66 +224,6 @@ def optimize_dispatch_on_prices(
     summary["price_mean_eur_mwh"] = float(prices.mean())
     validate_schedule(schedule, summary, test_params)
     return schedule, summary
-
-
-def _aligned_price_values(
-    prices: pd.Series,
-    timestamps: pd.Series,
-    label: str,
-) -> np.ndarray:
-    series = prices.copy()
-    series.index = pd.to_datetime(series.index)
-    series = series.groupby(series.index).mean().sort_index()
-    aligned = series.reindex(pd.to_datetime(timestamps))
-    if aligned.isna().any():
-        missing = int(aligned.isna().sum())
-        raise ValueError(f"{missing} {label} prices could not be aligned to schedule.")
-    return aligned.to_numpy(dtype=float)
-
-
-def settle_schedule_on_actual_prices(
-    forecast_schedule: pd.DataFrame,
-    actual_prices: pd.Series,
-    forecast_frame: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Preserve the forecast dispatch and recalculate cashflow on actual prices."""
-
-    settled = forecast_schedule.copy()
-    settled["timestamp"] = pd.to_datetime(settled["timestamp"])
-    settled["forecast_price_eur_mwh"] = settled["price_eur_mwh"].astype(float)
-    settled["actual_price_eur_mwh"] = _aligned_price_values(
-        actual_prices,
-        settled["timestamp"],
-        "actual",
-    )
-    settled["forecast_gross_revenue_eur"] = settled["gross_revenue_eur"]
-    settled["forecast_gross_purchase_eur"] = settled["gross_purchase_eur"]
-    settled["forecast_interval_profit_eur"] = settled["interval_profit_eur"]
-
-    if forecast_frame is not None and "forecast_reason" in forecast_frame.columns:
-        reasons = forecast_frame[["timestamp", "forecast_reason"]].copy()
-        reasons["timestamp"] = pd.to_datetime(reasons["timestamp"])
-        settled = settled.merge(reasons, on="timestamp", how="left")
-
-    settled["price_error_eur_mwh"] = (
-        settled["forecast_price_eur_mwh"] - settled["actual_price_eur_mwh"]
-    )
-    settled["actual_gross_revenue_eur"] = (
-        settled["actual_price_eur_mwh"] * settled["sell_energy_mwh"]
-    )
-    settled["actual_gross_purchase_eur"] = (
-        settled["actual_price_eur_mwh"] * settled["buy_energy_mwh"]
-    )
-    settled["actual_interval_profit_eur"] = (
-        settled["actual_gross_revenue_eur"]
-        - settled["actual_gross_purchase_eur"]
-        - settled["degradation_cost_eur"]
-    )
-    settled["actual_minus_forecast_profit_eur"] = (
-        settled["actual_interval_profit_eur"]
-        - settled["forecast_interval_profit_eur"]
-    )
-    return settled
 
 
 def _forecast_error_metrics(settled: pd.DataFrame) -> dict:

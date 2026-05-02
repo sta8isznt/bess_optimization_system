@@ -2,6 +2,10 @@
 
 Dark Streamlit dashboard for the Greek Day-Ahead Market BESS optimizer.
 
+The dashboard keeps the UI layer in `dashboard/`, while all optimizer,
+forecasting, LUT-loading, scaling, and settlement logic is shared from
+`src/bess_optimization/`.
+
 ## Run
 
 From the repository root:
@@ -29,9 +33,9 @@ python3 -m streamlit run dashboard/app.py
 
 The default demo expects:
 
-- `optimization/data/cleaned_data/price_signals_15m.csv`
-- `optimization/data/cleaned_data/Reduced_LUT_Final.csv`
-- `optimization/data/cleaned_data/Reduced_LUT_PyBaMM_Only.csv`
+- `data/cleaned_data/price_signals_15m.csv`
+- `data/cleaned_data/Reduced_LUT_Final.csv`
+- `data/cleaned_data/Reduced_LUT_PyBaMM_Only.csv`
 
 The app infers common timestamp and price column names, but the default price schema is:
 

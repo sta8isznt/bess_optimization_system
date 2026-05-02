@@ -1,19 +1,22 @@
-.PHONY: install lint format backtest clean
+.PHONY: install lint format test backtest clean
 
 install:
-	pip install -e ".[dev]"
+	python3 -m pip install -e ".[dev]"
 
 lint:
-	ruff check src scripts optimization
+	ruff check src dashboard tests
 
 format:
-	black src scripts optimization
+	black src dashboard tests
+
+test:
+	PYTHONPATH=src python3 -m unittest discover -s tests -p "test_*.py"
 
 backtest:
-	python optimization/run_engine.py
+	PYTHONPATH=src python3 -m bess_optimization.cli.run_engine
 
 clean:
-	rm -rf data/produced_data optimization/daily_outputs optimization/annual_outputs
+	rm -rf data/produced_data outputs
 	rm -rf .pytest_cache .coverage htmlcov logs
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete

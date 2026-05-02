@@ -19,8 +19,17 @@ dependencies = [
     "plotly>=5.18.0",
 ]
 
+[project.scripts]
+bess-run-optimization = "bess_optimization.cli.run_engine:main"
+bess-dam-forecast = "bess_optimization.forecasting.dam_15min_forecast:main"
+bess-forecast-backtest = "bess_optimization.services.forecast_strategy_backtest:main"
+bess-build-prices = "bess_optimization.cli.build_prices:main"
+
 [project.optional-dependencies]
 dev = [
     "black>=23.0",
     "ruff>=0.1.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]

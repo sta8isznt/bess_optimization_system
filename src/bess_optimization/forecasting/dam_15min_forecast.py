@@ -18,8 +18,11 @@ import numpy as np
 import pandas as pd
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_FORECAST_DIR = REPO_ROOT / "optimization" / "data" / "forecasts"
+from bess_optimization.paths import FORECAST_OUTPUT_DIR, PROJECT_ROOT
+
+
+REPO_ROOT = PROJECT_ROOT
+DEFAULT_FORECAST_DIR = FORECAST_OUTPUT_DIR
 DEFAULT_FORECAST_OUTPUT = DEFAULT_FORECAST_DIR / "dam_15min_forecast_next_day.csv"
 DEFAULT_BACKTEST_OUTPUT = (
     DEFAULT_FORECAST_DIR / "dam_15min_forecast_backtest_metrics.csv"
@@ -518,15 +521,13 @@ def _score_candidate(path: Path) -> int:
 def discover_default_input_file(repo_root: Path = REPO_ROOT) -> Path:
     """Find a sensible local DAM price input from existing project folders."""
 
-    known_default = repo_root / "optimization" / "data" / "cleaned_data" / "price_signals_15m.csv"
+    known_default = repo_root / "data" / "cleaned_data" / "price_signals_15m.csv"
     if known_default.exists():
         return known_default
 
     search_dirs = [
-        repo_root / "optimization" / "data" / "cleaned_data",
-        repo_root / "optimization" / "data",
+        repo_root / "data" / "cleaned_data",
         repo_root / "data",
-        repo_root / "data_final",
     ]
     candidates: list[Path] = []
     for directory in search_dirs:
@@ -546,7 +547,7 @@ def discover_default_input_file(repo_root: Path = REPO_ROOT) -> Path:
 
     raise ForecastingError(
         "No default DAM price file was found. Pass --input-file explicitly. "
-        "Tried optimization/data/cleaned_data, optimization/data, data, and data_final."
+        "Tried data/cleaned_data and data."
     )
 
 

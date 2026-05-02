@@ -47,10 +47,8 @@ models/**/*.pt
 models/**/*.pth
 checkpoints/**/*.pt
 
-# Optimization outputs and local market downloads
-optimization/dummy_outputs/
-optimization/annual_outputs/
-optimization/Results_*/
+# Local market downloads
+data/HeNex_data/
 
 # Logs
 logs/**
@@ -79,15 +77,6 @@ htmlcov/
 # Time GAN
 src/time_gan
 
-# Backtesting
-optimization/daily_outputs/
-
-# Data
-optimization/data/HeNex_data
-
-# PyBaMM training diagnostics
-src/bess_twin/training_statistics/
-
 # Root-level temporary PyBaMM outputs
 /Reduced_LUT_PyBaMM_Only.csv
 /pybamm_only_calendar_baseline.csv
@@ -98,4 +87,4 @@ src/bess_twin/training_statistics/
 
 reports/
 forecasts/
-optimization/forecast_backtest_outputs/
+outputs/

@@ -7,14 +7,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from optimization.forecast_strategy_backtest import (
+from bess_optimization.services.forecast_strategy_backtest import (
     build_test_params,
     build_trade_ledger,
     forecast_series_for_day,
     run_forecast_strategy_backtest,
     settle_schedule_on_actual_prices,
 )
-from optimization.forecasting.dam_15min_forecast import build_synthetic_history
+from bess_optimization.forecasting.dam_15min_forecast import build_synthetic_history
 
 
 class ForecastStrategyBacktestTests(unittest.TestCase):

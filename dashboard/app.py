@@ -282,17 +282,6 @@ def infer_system_stages(
     degradation_lut_file: Path | None,
     available_lut_files: list[Path],
 ) -> list[dict[str, str]]:
-    root = Path(__file__).resolve().parents[1]
-    pybamm_files = [
-        root / "src" / "bess_twin" / "pybamm_only_dod_degradation_lut.py",
-        root / "src" / "bess_twin" / "offline_pybamm_benchmark_calibrator.py",
-    ]
-    oxford_files = sorted((root / "src" / "oxford_data_analysis").glob("build_*.py"))
-    offline_paths = [display_path(path) for path in pybamm_files if path.exists()]
-    if oxford_files:
-        offline_paths.append("src/oxford_data_analysis/build_*.py")
-
-    lut_path = degradation_lut_file or default_lut_for_source("pybamm_only", available_lut_files)
     return [
         {
             "title": "Market Price Signal",
@@ -395,7 +384,7 @@ price_files = list_price_files()
 lut_files = list_lut_files()
 
 if not price_files:
-    st.error("No price CSV files were found under optimization/data/cleaned_data.")
+    st.error("No price CSV files were found under data/cleaned_data.")
     st.stop()
     raise SystemExit
 

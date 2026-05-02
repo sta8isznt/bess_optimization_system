@@ -32,11 +32,11 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from bess_optimization.paths import PYBAMM_OUTPUT_DIR
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BESS_SYSTEM_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_DIAGNOSTICS_OUTPUT_DIR = SCRIPT_DIR / "training_statistics"
-DEFAULT_OPTIMIZER_OUTPUT_DIR = BESS_SYSTEM_ROOT / "optimization" / "data" / "cleaned_data"
+DEFAULT_DIAGNOSTICS_OUTPUT_DIR = PYBAMM_OUTPUT_DIR / "diagnostics"
+DEFAULT_OPTIMIZER_OUTPUT_DIR = PYBAMM_OUTPUT_DIR
 
 
 class PyBaMMDegradationError(RuntimeError):

@@ -6,24 +6,14 @@ import numpy as np
 import pandas as pd
 import pulp as pl
 
-try:
-    from .backtest_utils import (
-        build_schedule_from_arrays,
-        summarize,
-        validate_schedule,
-        values_by_step,
-    )
-    from .naive import bess_ema
-    from .perfect import bess_order_perfect
-except ImportError:  # Keeps direct execution from the optimization/ folder working.
-    from backtest_utils import (
-        build_schedule_from_arrays,
-        summarize,
-        validate_schedule,
-        values_by_step,
-    )
-    from naive import bess_ema
-    from perfect import bess_order_perfect
+from .backtest_utils import (
+    build_schedule_from_arrays,
+    summarize,
+    validate_schedule,
+    values_by_step,
+)
+from .naive import bess_ema
+from .perfect import bess_order_perfect
 
 
 BENCHMARK_LABELS = {

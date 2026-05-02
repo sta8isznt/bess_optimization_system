@@ -3,10 +3,7 @@
 import pandas as pd
 import numpy as np
 
-try:
-    from .config import params
-except ImportError:  # Keeps direct execution from the optimization/ folder working.
-    from config import params
+from .config import params
 
 
 def _battery_params(battery_params=None):
@@ -74,6 +71,5 @@ def bess_ema(
         soc[t] = current_soc
 
     return profit, p_buy, p_sell, soc
-
 
 
