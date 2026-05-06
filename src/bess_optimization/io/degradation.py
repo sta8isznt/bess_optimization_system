@@ -13,7 +13,7 @@ from bess_optimization.optimization.backtest_utils import build_dummy_cost_curve
 from bess_optimization.paths import (
     CLEANED_DATA_DIR,
     DEFAULT_DEGRADATION_LUT_PATH,
-    DEFAULT_PYBAMM_ONLY_LUT_PATH,
+    DEFAULT_PYBAMM_LUT_PATH,
 )
 
 
@@ -32,7 +32,7 @@ LUT_COST_COLUMNS = (
 
 def list_lut_files(cleaned_data_dir: Path = CLEANED_DATA_DIR) -> list[Path]:
     files: list[Path] = []
-    for candidate in (DEFAULT_PYBAMM_ONLY_LUT_PATH, DEFAULT_DEGRADATION_LUT_PATH):
+    for candidate in (DEFAULT_PYBAMM_LUT_PATH, DEFAULT_DEGRADATION_LUT_PATH):
         if candidate.exists() and candidate not in files:
             files.append(candidate)
     if cleaned_data_dir.exists():
@@ -49,16 +49,18 @@ def default_lut_for_source(
     lut_files: Iterable[Path] | None = None,
 ) -> Path | None:
     files = list(lut_files or list_lut_files())
-    source = source.lower()
-    if source == "pybamm_only":
+    source = source.strip().lower()
+    if source == "pybamm":
         for path in files:
             if "pybamm" in path.name.lower():
                 return path
+        return None
     if source == "lut":
         for path in files:
             if "pybamm" not in path.name.lower():
                 return path
-    return files[0] if files else None
+        return files[0] if files else None
+    return None
 
 
 def _find_column(df: pd.DataFrame, candidates: Iterable[str], purpose: str) -> str:
@@ -191,8 +193,8 @@ def load_degradation_curve(
         energy = np.linspace(0.0, max_interval_energy, 5).tolist()
         return DegradationCurve(energy, [0.0 for _ in energy], "zero degradation cost - comparison only")
 
-    if source not in {"lut", "pybamm_only"}:
-        raise ValueError('Degradation source must be "lut", "pybamm_only", "dummy", or "zero".')
+    if source not in {"lut", "pybamm"}:
+        raise ValueError('Degradation source must be "lut", "pybamm", "dummy", or "zero".')
 
     selected_lut = Path(lut_file) if lut_file else default_lut_for_source(source)
     if selected_lut is None:

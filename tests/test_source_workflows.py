@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bess_optimization.io.degradation import load_degradation_curve
+from bess_optimization.io.degradation import default_lut_for_source, load_degradation_curve
 from bess_optimization.io.prices import load_price_signal_day
 from bess_optimization.models import ForecastRequest, OptimizationRequest
+from bess_optimization.paths import DEFAULT_PYBAMM_LUT_PATH
 from bess_optimization.forecasting.dam_15min_forecast import build_synthetic_history
 from bess_optimization.services.forecasting import run_forecast
 from bess_optimization.services.optimization import run_daily_optimization
@@ -43,6 +44,20 @@ class SourceWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(len(curve.energy_points), 2)
         self.assertEqual(curve.energy_points[0], 0.0)
         self.assertEqual(curve.source_label, "synthetic dummy degradation curve")
+
+    def test_pybamm_degradation_source_uses_default_lut(self) -> None:
+        curve = load_degradation_curve(
+            source="pybamm",
+            params={"p_max": 1.0, "e_max": 2.0, "dt": 0.25},
+            temperature_c=25.0,
+        )
+
+        self.assertTrue(DEFAULT_PYBAMM_LUT_PATH.exists())
+        self.assertEqual(default_lut_for_source("pybamm"), DEFAULT_PYBAMM_LUT_PATH)
+        self.assertIsNone(default_lut_for_source("unknown"))
+        self.assertGreaterEqual(len(curve.energy_points), 2)
+        self.assertEqual(curve.energy_points[0], 0.0)
+        self.assertIn(DEFAULT_PYBAMM_LUT_PATH.name, curve.source_label)
 
     def test_forecast_service_writes_optimizer_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

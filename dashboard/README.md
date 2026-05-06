@@ -35,7 +35,7 @@ The default demo expects:
 
 - `data/cleaned_data/price_signals_15m.csv`
 - `data/cleaned_data/Reduced_LUT_Final.csv`
-- `data/cleaned_data/Reduced_LUT_PyBaMM_Only.csv`
+- `data/cleaned_data/Reduced_LUT_PyBaMM.csv`
 
 The app infers common timestamp and price column names, but the default price schema is:
 
@@ -52,7 +52,7 @@ energy,temperature_c,deg_cost_eur_per_MWh_throughput
 ## Demo Workflow
 
 1. Select a date from `price_signals_15m.csv`.
-2. Select `pybamm_only` and the PyBaMM-only LUT.
+2. Select `pybamm` and the PyBaMM LUT.
 3. Run optimization.
 4. Inspect the dispatch chart: charge at low prices, discharge at high prices, idle when spreads are too small.
 5. Compare scenarios.

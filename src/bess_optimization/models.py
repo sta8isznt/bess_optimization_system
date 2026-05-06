@@ -1,4 +1,6 @@
 """
+PROTOCOL MODELS
+
 Shared request and result models for the BESS workflows.
 
 This module is the data contract layer of the project. It defines the
@@ -22,8 +24,8 @@ class TerminalSoCMode(StrEnum):
     """
     Allowed final state-of-charge rules for an optimization run.
 
-    EQUAL_INITIAL forces the final SoC to equal the initial SoC. FREE leaves
-    the final SoC unconstrained inside the normal SoC bounds.
+    EQUAL_INITIAL forces the final SoC to equal the initial SoC.
+    FREE leaves the final SoC unconstrained inside the normal SoC bounds.
     """
 
     EQUAL_INITIAL = "equal_initial"
@@ -68,7 +70,7 @@ class BatteryConfig:
         to pass into existing dictionary-based optimizer code and reports.
         """
 
-        # Use asdict to convert dataclass fields to a dictionary, but convert the Enum to its string value for better serialization
+        # Use asdict() from dataclasses module to convert dataclass fields to a dictionary, but convert the Enum to its string value for better serialization
         data = asdict(self)
         data["terminal_soc_mode"] = str(self.terminal_soc_mode)
         return data
@@ -94,7 +96,7 @@ class DegradationCurve:
 @dataclass(frozen=True)
 class ForecastRequest:
     """
-    Input/Output contract for DAM price forecasting.
+    Input contract for DAM price forecasting.
 
     The forecast service reads input_file, identifies the timestamp and price
     columns, builds a forecast for target_date, and optionally writes an
@@ -118,9 +120,10 @@ class ForecastResult:
     """
     Output contract returned by the forecasting workflow.
 
-    forecast contains the forecasted price intervals. output_path points to
-    the human-readable forecast file if one was written, and
+    forecast contains the forecasted price intervals.
+    output_path points to the human-readable forecast file if one was written, and
     optimizer_input_path points to the optimizer-shaped file if requested.
+    warnings lists any non-fatal issues encountered during the run, and
     metadata stores model-specific details that should not become fixed fields.
     """
 
@@ -146,7 +149,7 @@ class OptimizationRequest:
     target_date: str = "2025-11-01"
     year: int = 2025
     price_file: Path | None = None
-    degradation_source: str = "pybamm_only"
+    degradation_source: str = "pybamm"
     degradation_lut_file: Path | None = None
     temperature_c: float = 25.0
     params_override: dict = field(default_factory=dict)
@@ -216,7 +219,7 @@ class ForecastBacktestRequest:
     backtest_days: int | None = 30
     window_days: int = 30
     model: str = "seasonal"
-    degradation_source: str = "pybamm_only"
+    degradation_source: str = "pybamm"
     temperature_c: float = 25.0
     installed_capacity_mw: float = 50.0
     timestamp_col: str | None = None

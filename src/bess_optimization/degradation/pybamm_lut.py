@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build a PyBaMM-only DoD degradation-cost LUT.
+Build a PyBaMM DoD degradation-cost LUT.
 
 The pipeline runs a rest-only calendar baseline and representative 15-minute
 market-step cycling points at fixed cell temperature. Calendar SoH loss is
@@ -17,7 +17,7 @@ The cost column name is retained for downstream compatibility. Its value is
 computed per MWh discharged.
 
 Run:
-    python pybamm_only_dod_degradation_lut.py
+    python -m bess_optimization.degradation.pybamm_lut
 """
 
 from __future__ import annotations
@@ -603,12 +603,12 @@ def run_pipeline(
     dod_results, calendar_baseline = build_pybamm_dod_results(config)
     validate_optimizer_lut_inputs(dod_results, calendar_baseline, config)
 
-    calendar_path = diagnostics_output_dir / "pybamm_only_calendar_baseline.csv"
-    points_path = diagnostics_output_dir / "pybamm_only_dod_points.csv"
-    full_lut_path = diagnostics_output_dir / "pybamm_only_dod_degradation_lut.csv"
-    optimizer_lut_path = optimizer_output_dir / "Reduced_LUT_PyBaMM_Only.csv"
-    report_path = diagnostics_output_dir / "pybamm_only_dod_report.md"
-    manifest_path = diagnostics_output_dir / "pybamm_only_dod_manifest.json"
+    calendar_path = diagnostics_output_dir / "pybamm_calendar_baseline.csv"
+    points_path = diagnostics_output_dir / "pybamm_dod_points.csv"
+    full_lut_path = diagnostics_output_dir / "pybamm_dod_degradation_lut.csv"
+    optimizer_lut_path = optimizer_output_dir / "Reduced_LUT_PyBaMM.csv"
+    report_path = diagnostics_output_dir / "pybamm_dod_report.md"
+    manifest_path = diagnostics_output_dir / "pybamm_dod_manifest.json"
 
     optimizer_lut = build_optimizer_lut(dod_results)
     diagnostics = build_report_diagnostics(dod_results)
@@ -629,8 +629,8 @@ def run_pipeline(
     write_report(report_path, dod_results, calendar_baseline, diagnostics, config, outputs)
 
     manifest = {
-        "pipeline": "pybamm_only_dod_degradation_lut",
-        "strict_pybamm_only": True,
+        "pipeline": "pybamm_dod_degradation_lut",
+        "strict_pybamm": True,
         "validation_status": "passed",
         "diagnostics_output_dir": str(diagnostics_output_dir),
         "optimizer_output_dir": str(optimizer_output_dir),
@@ -644,14 +644,14 @@ def run_pipeline(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build a PyBaMM-only DoD degradation-cost LUT.")
+    parser = argparse.ArgumentParser(description="Build a PyBaMM DoD degradation-cost LUT.")
     parser.add_argument(
         "--diagnostics-output-dir",
         help=f"Folder for PyBaMM diagnostics. Default: {DEFAULT_DIAGNOSTICS_OUTPUT_DIR}",
     )
     parser.add_argument(
         "--optimizer-output-dir",
-        help=f"Folder for Reduced_LUT_PyBaMM_Only.csv. Default: {DEFAULT_OPTIMIZER_OUTPUT_DIR}",
+        help=f"Folder for Reduced_LUT_PyBaMM.csv. Default: {DEFAULT_OPTIMIZER_OUTPUT_DIR}",
     )
     parser.add_argument("--nominal-energy-mwh", type=float, default=2.0)
     parser.add_argument("--max-power-mw", type=float, default=1.0)
@@ -691,9 +691,9 @@ def main() -> None:
     try:
         manifest = run_pipeline(diagnostics_output_dir, optimizer_output_dir, config)
     except (PyBaMMDegradationError, ValueError) as exc:
-        raise SystemExit(f"Failed to build PyBaMM-only LUT: {exc}") from exc
+        raise SystemExit(f"Failed to build PyBaMM LUT: {exc}") from exc
 
-    print("\nPyBaMM-only DoD degradation LUT run completed.")
+    print("\nPyBaMM DoD degradation LUT run completed.")
     print("Validation: passed")
     print("Outputs:")
     for name, path in manifest["outputs"].items():

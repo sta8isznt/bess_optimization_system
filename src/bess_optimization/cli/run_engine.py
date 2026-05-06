@@ -17,7 +17,7 @@ from bess_optimization.paths import (
     ANNUAL_OUTPUT_DIR,
     DAILY_OUTPUT_DIR,
     DEFAULT_PRICE_SIGNALS_PATH,
-    DEFAULT_PYBAMM_ONLY_LUT_PATH,
+    DEFAULT_PYBAMM_LUT_PATH,
 )
 from bess_optimization.services.optimization import run_annual_optimization, run_daily_optimization
 
@@ -29,10 +29,10 @@ from bess_optimization.services.optimization import run_annual_optimization, run
 RUN_MODE = "daily"  # Choose "daily" or "annual".
 TARGET_DATE = "2025-11-01"
 YEAR = 2025
-DEGRADATION_SOURCE = "pybamm_only"
+DEGRADATION_SOURCE = "pybamm"
 LUT_TEMPERATURE_C = 25.0
 PRICE_SIGNALS_CSV = DEFAULT_PRICE_SIGNALS_PATH
-DEGRADATION_LUT_CSV = DEFAULT_PYBAMM_ONLY_LUT_PATH
+DEGRADATION_LUT_CSV = DEFAULT_PYBAMM_LUT_PATH
 SOLVER_MSG = False
 INSTALLED_CAPACITY_MW = 50.0
 

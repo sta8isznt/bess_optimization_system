@@ -355,7 +355,7 @@ params_override = {
     "terminal_soc_mode": terminal_soc_mode,
 }
 
-degradation_source = "pybamm_only"
+degradation_source = "pybamm"
 degradation_lut_file = default_lut_for_source(degradation_source, lut_files)
 run_clicked = st.sidebar.button("Run", type="primary")
 

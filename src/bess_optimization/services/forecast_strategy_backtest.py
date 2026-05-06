@@ -38,7 +38,7 @@ from bess_optimization.forecasting.dam_15min_forecast import (
 from bess_optimization.paths import (
     DEFAULT_DEGRADATION_LUT_PATH,
     DEFAULT_PRICE_SIGNALS_PATH,
-    DEFAULT_PYBAMM_ONLY_LUT_PATH,
+    DEFAULT_PYBAMM_LUT_PATH,
     FORECAST_BACKTEST_OUTPUT_DIR,
 )
 from bess_optimization.settlement.cashflows import settle_schedule_on_actual_prices
@@ -49,7 +49,7 @@ DEFAULT_OUTPUT_DIR = FORECAST_BACKTEST_OUTPUT_DIR
 DEFAULT_BACKTEST_DAYS = 30
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_INSTALLED_CAPACITY_MW = 50.0
-DEFAULT_DEGRADATION_SOURCE = "pybamm_only"
+DEFAULT_DEGRADATION_SOURCE = "pybamm"
 DEFAULT_LUT_TEMPERATURE_C = 25.0
 PROFIT_TOLERANCE_EUR = 1e-7
 
@@ -78,12 +78,12 @@ def load_degradation_curve(
     test_params: dict,
     temperature_c: float = DEFAULT_LUT_TEMPERATURE_C,
     lut_csv: Path = DEFAULT_DEGRADATION_LUT_PATH,
-    pybamm_only_lut_csv: Path = DEFAULT_PYBAMM_ONLY_LUT_PATH,
+    pybamm_lut_csv: Path = DEFAULT_PYBAMM_LUT_PATH,
 ) -> tuple[list[float], list[float], str]:
     """Load the same degradation-curve inputs expected by the optimizer."""
 
     source = str(source).strip().lower()
-    lut_file = pybamm_only_lut_csv if source == "pybamm_only" else lut_csv
+    lut_file = pybamm_lut_csv if source == "pybamm" else lut_csv
     curve = load_shared_degradation_curve(
         source=source,
         params=test_params,
@@ -847,7 +847,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--degradation-source",
-        choices=["lut", "pybamm_only", "dummy"],
+        choices=["lut", "pybamm", "dummy"],
         default=DEFAULT_DEGRADATION_SOURCE,
         help="Degradation curve used by the existing optimizer.",
     )

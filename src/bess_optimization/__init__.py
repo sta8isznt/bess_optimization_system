@@ -1,5 +1,9 @@
 """Source package for the BESS optimization workflow."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from .models import (
     BatteryConfig,
     DegradationCurve,
@@ -10,7 +14,17 @@ from .models import (
     OptimizationRequest,
     OptimizationResult,
 )
-from .degradation.pybamm_lut import PyBaMMLutConfig
+
+if TYPE_CHECKING:
+    from .degradation.pybamm_lut import PyBaMMLutConfig
+
+
+def __getattr__(name: str):
+    if name == "PyBaMMLutConfig":
+        from .degradation.pybamm_lut import PyBaMMLutConfig
+
+        return PyBaMMLutConfig
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def run_forecast(request: ForecastRequest) -> ForecastResult:

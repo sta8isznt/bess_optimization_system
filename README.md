@@ -114,10 +114,10 @@ python -m bess_optimization.cli.forecast_strategy_backtest \
   --input-file data/cleaned_data/price_signals_15m.csv \
   --backtest-days 30 \
   --window-days 30 \
-  --degradation-source pybamm_only
+  --degradation-source pybamm
 ```
 
-Build a PyBaMM-only LUT offline:
+Build a PyBaMM LUT offline:
 
 ```bash
 python -m bess_optimization.degradation.pybamm_lut
@@ -134,4 +134,4 @@ The tracked optimizer inputs are:
 
 - `data/cleaned_data/price_signals_15m.csv`
 - `data/cleaned_data/Reduced_LUT_Final.csv`
-- `data/cleaned_data/Reduced_LUT_PyBaMM_Only.csv`
+- `data/cleaned_data/Reduced_LUT_PyBaMM.csv`
