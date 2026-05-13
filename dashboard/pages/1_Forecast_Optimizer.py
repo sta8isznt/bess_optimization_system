@@ -33,6 +33,7 @@ from bess_optimization.forecasting.dam_15min_forecast import (  # noqa: E402
     utc_created_at,
     write_forecast_outputs,
 )
+from bess_optimization.models import OptimizationResult  # noqa: E402
 from bess_optimization.settlement.cashflows import (  # noqa: E402
     settle_schedule_on_actual_prices,
 )
@@ -233,7 +234,7 @@ def show_metric_row(
     summary: dict,
     schedule: pd.DataFrame,
     actual: pd.Series | None,
-    actual_result: dict | None,
+    actual_result: OptimizationResult | None,
 ) -> None:
     planned_profit = scaled(summary, "net_profit_eur", "park_net_profit_eur")
     degradation_cost = scaled(
@@ -246,7 +247,7 @@ def show_metric_row(
     realized_profit = settled_profit(summary, schedule, actual)
     actual_optimal_profit = None
     if actual_result is not None:
-        actual_summary = actual_result["summary_dict"]
+        actual_summary = actual_result.summary_dict
         actual_optimal_profit = scaled(
             actual_summary,
             "net_profit_eur",
@@ -412,7 +413,7 @@ if run_clicked:
                             temperature_c=25.0,
                             terminal_soc_mode=terminal_soc_mode,
                         )
-                        actual_warnings = actual_optimization_result.get("warnings", [])
+                        actual_warnings = actual_optimization_result.warnings
                     except Exception as exc:
                         actual_warnings = [f"Real-price optimizer unavailable: {exc}"]
 
@@ -427,7 +428,7 @@ if run_clicked:
                 "warnings": (
                     history_warnings
                     + forecast_warnings
-                    + optimization_result.get("warnings", [])
+                    + optimization_result.warnings
                     + actual_warnings
                 ),
             }
@@ -454,8 +455,8 @@ forecast = result["forecast"]
 actual_prices = result["actual_prices"]
 optimization_result = result["optimization_result"]
 actual_optimization_result = result["actual_optimization_result"]
-summary = optimization_result["summary_dict"]
-schedule = optimization_result["dispatch_df"]
+summary = optimization_result.summary_dict
+schedule = optimization_result.dispatch_df
 
 section_title("Basic Statistics")
 show_metric_row(

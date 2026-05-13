@@ -525,18 +525,18 @@ if st.session_state.get("last_error"):
     st.error(st.session_state["last_error"])
 
 result = st.session_state.get("last_result")
-summary = result["summary_dict"] if result is not None else None
-schedule = result["dispatch_df"] if result is not None else None
-params_used = result["params_used"] if result is not None else None
+summary = result.summary_dict if result is not None else None
+schedule = result.dispatch_df if result is not None else None
+params_used = result.params_used if result is not None else None
 
 if result is not None:
-    run_status = str(summary.get("solver_status", result.get("status", "Unknown")))
+    run_status = str(summary.get("solver_status", result.status))
     if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
         horizon_label = f"{int(summary.get('year', year))} annual horizon"
     else:
         horizon_label = str(summary.get("date", pd.Timestamp(target_date).date().isoformat()))
-    header_degradation = str(result["files_used"].get("degradation_source", "N/A"))
-    header_price = path_label(result["files_used"].get("price_file"))
+    header_degradation = str(result.files_used.get("degradation_source", "N/A"))
+    header_price = path_label(result.files_used.get("price_file"))
 else:
     run_status = "Not run"
     horizon_label = (
@@ -576,7 +576,7 @@ if result is None:
     st.stop()
     raise SystemExit
 
-for warning in result.get("warnings", []):
+for warning in result.warnings:
     st.warning(warning)
 
 if st.session_state.get("last_config", {}).get("run_mode") == "Annual":
@@ -604,7 +604,7 @@ else:
     st.info("Install Plotly to see the interactive financial chart.")
 
 section_title("Optimization Model Benchmark")
-comparison = result.get("benchmark_comparison_df")
+comparison = result.benchmark_comparison_df
 if comparison is None or comparison.empty:
     st.info("Benchmark comparison is unavailable for this run.")
 else:

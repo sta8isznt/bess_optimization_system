@@ -15,6 +15,7 @@ from bess_optimization.io.degradation import (  # noqa: E402
     default_lut_for_source,
     list_lut_files,
 )
+from bess_optimization.models import OptimizationResult  # noqa: E402
 from bess_optimization.services.optimization import (  # noqa: E402
     DashboardOptimizerError,
     available_dates,
@@ -28,9 +29,9 @@ from bess_optimization.services.optimization import (  # noqa: E402
 )
 
 
-def run_daily_optimization(*args, **kwargs) -> dict:
-    return _run_daily_optimization(*args, **kwargs).to_legacy_dict()
+def run_daily_optimization(*args, **kwargs) -> OptimizationResult:
+    return _run_daily_optimization(*args, **kwargs)
 
 
-def run_annual_optimization(*args, **kwargs) -> dict:
-    return _run_annual_optimization(*args, **kwargs).to_legacy_dict()
+def run_annual_optimization(*args, **kwargs) -> OptimizationResult:
+    return _run_annual_optimization(*args, **kwargs)

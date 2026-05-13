@@ -179,28 +179,6 @@ class OptimizationResult:
     daily_stats_df: pd.DataFrame | None = None
     benchmark_comparison_df: pd.DataFrame | None = None
 
-    def to_legacy_dict(self) -> dict:
-        """
-        Return the result in the older dictionary shape used by UI adapters.
-
-        This keeps the service result strongly typed while avoiding duplicate
-        conversion logic in compatibility-facing code.
-        """
-
-        out = {
-            "status": self.status,
-            "dispatch_df": self.dispatch_df,
-            "summary_dict": self.summary_dict,
-            "params_used": self.params_used,
-            "files_used": self.files_used,
-            "warnings": self.warnings,
-        }
-        if self.daily_stats_df is not None:
-            out["daily_stats_df"] = self.daily_stats_df
-        if self.benchmark_comparison_df is not None:
-            out["benchmark_comparison_df"] = self.benchmark_comparison_df
-        return out
-
 
 @dataclass(frozen=True)
 class ForecastBacktestRequest:
@@ -233,8 +211,8 @@ class ForecastBacktestResult:
     """
     Output contract returned by the forecast-strategy backtest workflow.
 
-    interval_schedule stores the interval-level simulated dispatch and
-    settlement results. daily_stats and trade_stats summarize performance at
+    interval_schedule stores the interval-level simulated dispatch and settlement results.
+    daily_stats and trade_stats summarize performance at
     higher levels, summary contains overall KPIs, and warnings lists non-fatal
     issues encountered during the run.
     """
