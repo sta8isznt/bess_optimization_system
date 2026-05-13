@@ -29,9 +29,10 @@ try:
         list_lut_files,
         list_price_files,
         load_price_series,
-        run_annual_optimization,
-        run_daily_optimization,
-        validate_parameters,
+        BatteryConfig,
+        OptimizationRequest,
+        run_optimization,
+        validate_battery_config,
     )
     from .styles import (
         compact_kpi_strip,
@@ -60,9 +61,10 @@ except ImportError:
         list_lut_files,
         list_price_files,
         load_price_series,
-        run_annual_optimization,
-        run_daily_optimization,
-        validate_parameters,
+        BatteryConfig,
+        OptimizationRequest,
+        run_optimization,
+        validate_battery_config,
     )
     from styles import (
         compact_kpi_strip,
@@ -447,18 +449,17 @@ soc_max_pct = st.sidebar.slider("SoC maximum percentage", 5, 100, 90, step=1)
 soc_init_pct = st.sidebar.slider("Initial SoC percentage", 0, 100, 50, step=1)
 terminal_label = st.sidebar.selectbox("Terminal SoC mode", ["equal to initial SoC", "free terminal SoC"])
 terminal_soc_mode = "equal_initial" if terminal_label == "equal to initial SoC" else "free"
-
-params_override = {
-    "p_max": float(power_mw),
-    "e_max": float(energy_mwh),
-    "eta_ch": float(eta_ch),
-    "eta_dis": float(eta_dis),
-    "soc_min": float(soc_min_pct) / 100.0,
-    "soc_max": float(soc_max_pct) / 100.0,
-    "soc_init": float(soc_init_pct) / 100.0,
-    "dt": 0.25,
-    "terminal_soc_mode": terminal_soc_mode,
-}
+battery = BatteryConfig(
+    p_max=float(power_mw),
+    e_max=float(energy_mwh),
+    eta_ch=float(eta_ch),
+    eta_dis=float(eta_dis),
+    soc_min=float(soc_min_pct) / 100.0,
+    soc_max=float(soc_max_pct) / 100.0,
+    soc_init=float(soc_init_pct) / 100.0,
+    dt=0.25,
+    terminal_soc_mode=terminal_soc_mode,
+)
 
 degradation_source = "pybamm"
 degradation_lut_file = default_lut_for_source(degradation_source, lut_files)
@@ -469,7 +470,7 @@ temperature_c = 25.0
 run_clicked = st.sidebar.button("Run Optimization", type="primary")
 
 if run_clicked:
-    errors = validate_parameters(params_override)
+    errors = validate_battery_config(battery)
     if run_mode == "Daily" and not target_date_available:
         errors.append(f"No price data exists for {pd.Timestamp(target_date).date().isoformat()}.")
     if degradation_lut_file is None:
@@ -481,39 +482,29 @@ if run_clicked:
         st.session_state.pop("last_error", None)
         try:
             with st.spinner("Solving MILP dispatch schedule..."):
-                if run_mode == "Daily":
-                    result = run_daily_optimization(
+                result = run_optimization(
+                    OptimizationRequest(
+                        run_mode=run_mode.lower(),
                         target_date=pd.Timestamp(target_date).date().isoformat(),
-                        price_file=price_file,
-                        degradation_lut_file=degradation_lut_file,
-                        params_override=params_override,
-                        degradation_source=degradation_source,
-                        scale_capacity_mw=scale_capacity_mw,
-                        temperature_c=temperature_c,
-                        terminal_soc_mode=terminal_soc_mode,
-                    )
-                else:
-                    result = run_annual_optimization(
                         year=int(year),
                         price_file=price_file,
                         degradation_lut_file=degradation_lut_file,
-                        params_override=params_override,
                         degradation_source=degradation_source,
+                        battery=battery,
                         scale_capacity_mw=scale_capacity_mw,
                         temperature_c=temperature_c,
-                        terminal_soc_mode=terminal_soc_mode,
                     )
+                )
 
                 st.session_state["last_result"] = result
                 st.session_state["last_config"] = {
                     "target_date": pd.Timestamp(target_date).date().isoformat(),
                     "price_file": price_file,
                     "degradation_lut_file": degradation_lut_file,
-                    "params_override": params_override,
+                    "battery": battery,
                     "degradation_source": degradation_source,
                     "scale_capacity_mw": scale_capacity_mw,
                     "temperature_c": temperature_c,
-                    "terminal_soc_mode": terminal_soc_mode,
                     "degradation_cost_multiplier": 1.0,
                     "run_mode": run_mode,
                 }

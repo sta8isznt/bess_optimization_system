@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 from bess_optimization.forecasting.dam_15min_forecast import build_synthetic_history
-from bess_optimization.models import OptimizationResult
+from bess_optimization.models import BatteryConfig, OptimizationResult
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[1] / "dashboard"
 if str(DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_DIR))
 
-from optimizer_adapter import run_daily_optimization  # noqa: E402
+from optimizer_adapter import OptimizationRequest, run_optimization  # noqa: E402
 
 
 def _write_price_file(path: Path, days: int = 3) -> None:
@@ -32,12 +32,15 @@ class DashboardAdapterTests(unittest.TestCase):
             price_path = Path(tmp) / "prices.csv"
             _write_price_file(price_path)
 
-            result = run_daily_optimization(
-                target_date="2025-11-02",
-                price_file=price_path,
-                degradation_source="dummy",
-                params_override={"dt": 0.25},
-                scale_capacity_mw=1.0,
+            result = run_optimization(
+                OptimizationRequest(
+                    run_mode="daily",
+                    target_date="2025-11-02",
+                    price_file=price_path,
+                    degradation_source="dummy",
+                    battery=BatteryConfig(dt=0.25),
+                    scale_capacity_mw=1.0,
+                )
             )
 
         self.assertIsInstance(result, OptimizationResult)

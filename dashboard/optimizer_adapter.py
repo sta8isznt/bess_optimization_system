@@ -15,7 +15,7 @@ from bess_optimization.io.degradation import (  # noqa: E402
     default_lut_for_source,
     list_lut_files,
 )
-from bess_optimization.models import OptimizationResult  # noqa: E402
+from bess_optimization.models import BatteryConfig, OptimizationRequest, OptimizationResult  # noqa: E402
 from bess_optimization.services.optimization import (  # noqa: E402
     DashboardOptimizerError,
     available_dates,
@@ -23,15 +23,10 @@ from bess_optimization.services.optimization import (  # noqa: E402
     display_path,
     list_price_files,
     load_price_series,
-    run_annual_optimization as _run_annual_optimization,
-    run_daily_optimization as _run_daily_optimization,
-    validate_parameters,
+    run_optimization as _run_optimization,
+    validate_battery_config,
 )
 
 
-def run_daily_optimization(*args, **kwargs) -> OptimizationResult:
-    return _run_daily_optimization(*args, **kwargs)
-
-
-def run_annual_optimization(*args, **kwargs) -> OptimizationResult:
-    return _run_annual_optimization(*args, **kwargs)
+def run_optimization(*args, **kwargs) -> OptimizationResult:
+    return _run_optimization(*args, **kwargs)

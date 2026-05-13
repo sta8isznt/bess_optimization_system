@@ -18,12 +18,14 @@ for candidate in (DASHBOARD_DIR, PROJECT_ROOT, SRC_ROOT):
 
 from optimizer_adapter import (  # noqa: E402
     DashboardOptimizerError,
+    BatteryConfig,
+    OptimizationRequest,
     default_lut_for_source,
     display_path,
     list_lut_files,
     list_price_files,
-    run_daily_optimization,
-    validate_parameters,
+    run_optimization,
+    validate_battery_config,
 )
 from bess_optimization.forecasting.dam_15min_forecast import (  # noqa: E402
     DEFAULT_FORECAST_OUTPUT,
@@ -343,25 +345,24 @@ soc_max_pct = st.sidebar.slider("SoC maximum %", 5, 100, 90, step=1)
 soc_init_pct = st.sidebar.slider("Initial SoC %", 0, 100, 50, step=1)
 terminal_label = st.sidebar.selectbox("Terminal SoC", ["equal to initial SoC", "free terminal SoC"])
 terminal_soc_mode = "equal_initial" if terminal_label == "equal to initial SoC" else "free"
-
-params_override = {
-    "p_max": 1.0,
-    "e_max": 2.0,
-    "eta_ch": float(eta_ch),
-    "eta_dis": float(eta_dis),
-    "soc_min": float(soc_min_pct) / 100.0,
-    "soc_max": float(soc_max_pct) / 100.0,
-    "soc_init": float(soc_init_pct) / 100.0,
-    "dt": 0.25,
-    "terminal_soc_mode": terminal_soc_mode,
-}
+battery = BatteryConfig(
+    p_max=1.0,
+    e_max=2.0,
+    eta_ch=float(eta_ch),
+    eta_dis=float(eta_dis),
+    soc_min=float(soc_min_pct) / 100.0,
+    soc_max=float(soc_max_pct) / 100.0,
+    soc_init=float(soc_init_pct) / 100.0,
+    dt=0.25,
+    terminal_soc_mode=terminal_soc_mode,
+)
 
 degradation_source = "pybamm"
 degradation_lut_file = default_lut_for_source(degradation_source, lut_files)
 run_clicked = st.sidebar.button("Run", type="primary")
 
 if run_clicked:
-    errors = validate_parameters(params_override)
+    errors = validate_battery_config(battery)
     if degradation_lut_file is None:
         errors.append("PyBaMM degradation LUT file is missing.")
 
@@ -388,32 +389,36 @@ if run_clicked:
                 if optimizer_path is None:
                     raise ForecastingError("Forecast optimizer input CSV was not created.")
 
-                optimization_result = run_daily_optimization(
-                    target_date=pd.Timestamp(target_date).date().isoformat(),
-                    price_file=optimizer_path,
-                    degradation_lut_file=degradation_lut_file,
-                    params_override=params_override,
-                    degradation_source=degradation_source,
-                    scale_capacity_mw=float(installed_capacity_mw),
-                    temperature_c=25.0,
-                    terminal_soc_mode=terminal_soc_mode,
+                optimization_result = run_optimization(
+                    OptimizationRequest(
+                        run_mode="daily",
+                        target_date=pd.Timestamp(target_date).date().isoformat(),
+                        price_file=optimizer_path,
+                        degradation_lut_file=degradation_lut_file,
+                        degradation_source=degradation_source,
+                        battery=battery,
+                        scale_capacity_mw=float(installed_capacity_mw),
+                        temperature_c=25.0,
+                    )
                 )
 
                 actual_optimization_result = None
                 actual_warnings = []
                 if actual_prices is not None:
                     try:
-                        actual_optimization_result = run_daily_optimization(
-                            target_date=pd.Timestamp(target_date).date().isoformat(),
-                            price_file=price_file,
-                            degradation_lut_file=degradation_lut_file,
-                            params_override=params_override,
-                            degradation_source=degradation_source,
-                            scale_capacity_mw=float(installed_capacity_mw),
-                            temperature_c=25.0,
-                            terminal_soc_mode=terminal_soc_mode,
+                        actual_optimization_result = run_optimization(
+                            OptimizationRequest(
+                                run_mode="daily",
+                                target_date=pd.Timestamp(target_date).date().isoformat(),
+                                price_file=price_file,
+                                degradation_lut_file=degradation_lut_file,
+                                degradation_source=degradation_source,
+                                battery=battery,
+                                scale_capacity_mw=float(installed_capacity_mw),
+                                temperature_c=25.0,
+                            )
                         )
-                        actual_warnings = actual_optimization_result.warnings
+                        actual_warnings = list(actual_optimization_result.warnings)
                     except Exception as exc:
                         actual_warnings = [f"Real-price optimizer unavailable: {exc}"]
 
@@ -428,7 +433,7 @@ if run_clicked:
                 "warnings": (
                     history_warnings
                     + forecast_warnings
-                    + optimization_result.warnings
+                    + list(optimization_result.warnings)
                     + actual_warnings
                 ),
             }

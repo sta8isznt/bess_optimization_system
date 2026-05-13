@@ -3,14 +3,17 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import pandas as pd
+
+from bess_optimization.models import BatteryConfig, ForecastRequest, OptimizationRequest, OptimizationResult
 from bess_optimization.io.degradation import default_lut_for_source, load_degradation_curve
 from bess_optimization.io.prices import load_price_signal_day
-from bess_optimization.models import ForecastRequest, OptimizationRequest
 from bess_optimization.paths import DEFAULT_PYBAMM_LUT_PATH
 from bess_optimization.forecasting.dam_15min_forecast import build_synthetic_history
 from bess_optimization.services.forecasting import run_forecast
-from bess_optimization.services.optimization import run_daily_optimization
+from bess_optimization.services.optimization import run_optimization
 from bess_optimization.degradation.pybamm_lut import PyBaMMLutConfig, validate_config
 
 
@@ -25,6 +28,24 @@ def _write_price_file(path: Path, days: int = 45) -> None:
 
 
 class SourceWorkflowTests(unittest.TestCase):
+    def test_run_optimization_dispatches_annual_mode(self) -> None:
+        expected = OptimizationResult(
+            status="Optimal",
+            dispatch_df=pd.DataFrame(),
+            summary_dict={},
+            params_used={},
+            files_used={},
+        )
+
+        with patch(
+            "bess_optimization.services.optimization._run_annual_optimization",
+            return_value=expected,
+        ) as annual_runner:
+            result = run_optimization(OptimizationRequest(run_mode="annual"))
+
+        self.assertIs(result, expected)
+        annual_runner.assert_called_once()
+
     def test_price_loader_builds_complete_day(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             price_path = Path(tmp) / "prices.csv"
@@ -42,6 +63,8 @@ class SourceWorkflowTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(curve.energy_points), 2)
+        self.assertIsInstance(curve.energy_points, tuple)
+        self.assertIsInstance(curve.cost_points, tuple)
         self.assertEqual(curve.energy_points[0], 0.0)
         self.assertEqual(curve.source_label, "synthetic dummy degradation curve")
 
@@ -87,21 +110,22 @@ class SourceWorkflowTests(unittest.TestCase):
             price_path = Path(tmp) / "prices.csv"
             _write_price_file(price_path, days=3)
 
-            result = run_daily_optimization(
+            result = run_optimization(
                 OptimizationRequest(
+                    run_mode="daily",
                     target_date="2025-11-02",
                     price_file=price_path,
                     degradation_source="dummy",
-                    params_override={
-                        "p_max": 1.0,
-                        "e_max": 2.0,
-                        "eta_ch": 0.92,
-                        "eta_dis": 0.92,
-                        "soc_min": 0.1,
-                        "soc_max": 0.9,
-                        "soc_init": 0.5,
-                        "dt": 0.25,
-                    },
+                    battery=BatteryConfig(
+                        p_max=1.0,
+                        e_max=2.0,
+                        eta_ch=0.92,
+                        eta_dis=0.92,
+                        soc_min=0.1,
+                        soc_max=0.9,
+                        soc_init=0.5,
+                        dt=0.25,
+                    ),
                     scale_capacity_mw=1.0,
                 )
             )
@@ -124,12 +148,13 @@ class SourceWorkflowTests(unittest.TestCase):
                     window_days=20,
                 )
             )
-            optimization_result = run_daily_optimization(
+            optimization_result = run_optimization(
                 OptimizationRequest(
+                    run_mode="daily",
                     target_date="2025-12-10",
                     price_file=forecast_result.optimizer_input_path,
                     degradation_source="dummy",
-                    params_override={"dt": 0.25},
+                    battery=BatteryConfig(dt=0.25),
                     scale_capacity_mw=1.0,
                 )
             )

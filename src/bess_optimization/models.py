@@ -1,7 +1,4 @@
-"""
-PROTOCOL MODELS
-
-Shared request and result models for the BESS workflows.
+"""Shared request and result models for the BESS workflows.
 
 This module is the data contract layer of the project. It defines the
 configuration, request, and result objects that move between the forecasting,
@@ -10,15 +7,12 @@ optimization, backtesting, CLI, and dashboard code.
 
 from __future__ import annotations
 
-# Use dataclasses for simple data containers
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-
-# Use enum for type annotations and restrictions (used in BatteryConfig)
-# We use StrEnum to allow string values that are also enum members, which is convenient for configuration
 from enum import StrEnum
 
 import pandas as pd
+
 
 class TerminalSoCMode(StrEnum):
     """
@@ -30,6 +24,13 @@ class TerminalSoCMode(StrEnum):
 
     EQUAL_INITIAL = "equal_initial"
     FREE = "free"
+
+
+class OptimizationRunMode(StrEnum):
+    """Supported optimization horizons."""
+
+    DAILY = "daily"
+    ANNUAL = "annual"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,13 @@ class BatteryConfig:
     dt: float = 0.25
     terminal_soc_mode: TerminalSoCMode = TerminalSoCMode.EQUAL_INITIAL
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "terminal_soc_mode",
+            TerminalSoCMode(str(self.terminal_soc_mode).strip().lower()),
+        )
+
     def as_dict(self) -> dict:
         """
         Return optimizer parameters as a plain dictionary.
@@ -70,7 +78,6 @@ class BatteryConfig:
         to pass into existing dictionary-based optimizer code and reports.
         """
 
-        # Use asdict() from dataclasses module to convert dataclass fields to a dictionary, but convert the Enum to its string value for better serialization
         data = asdict(self)
         data["terminal_soc_mode"] = str(self.terminal_soc_mode)
         return data
@@ -87,8 +94,8 @@ class DegradationCurve:
     warnings carries non-fatal loading or validation messages.
     """
 
-    energy_points: list[float]
-    cost_points: list[float]
+    energy_points: tuple[float, ...]
+    cost_points: tuple[float, ...]
     source_label: str
     warnings: tuple[str, ...] = ()
 
@@ -137,24 +144,22 @@ class ForecastResult:
 @dataclass(frozen=True)
 class OptimizationRequest:
     """
-    Input contract for daily or annual BESS optimization.
+    Input contract for BESS optimization.
 
-    This model collects the market data path, degradation source, battery
-    parameter overrides, scale-up target, terminal SoC rule, and solver options
-    needed by the optimization service. The request is intentionally small so
-    the CLI and dashboard can call the same backend workflow.
+    run_mode selects a daily or annual workflow. battery stores the physical
+    battery parameters. The remaining fields select market data, degradation
+    inputs, scale-up target, and solver options.
     """
 
-    run_mode: str = "daily"
+    run_mode: OptimizationRunMode = OptimizationRunMode.DAILY
     target_date: str = "2025-11-01"
     year: int = 2025
     price_file: Path | None = None
     degradation_source: str = "pybamm"
     degradation_lut_file: Path | None = None
     temperature_c: float = 25.0
-    params_override: dict = field(default_factory=dict)
+    battery: BatteryConfig = field(default_factory=BatteryConfig)
     scale_capacity_mw: float | None = 50.0
-    terminal_soc_mode: TerminalSoCMode = TerminalSoCMode.EQUAL_INITIAL
     degradation_cost_multiplier: float = 1.0
     solver_msg: bool = False
 
@@ -175,7 +180,7 @@ class OptimizationResult:
     summary_dict: dict
     params_used: dict
     files_used: dict
-    warnings: list[str] = field(default_factory=list)
+    warnings: tuple[str, ...] = ()
     daily_stats_df: pd.DataFrame | None = None
     benchmark_comparison_df: pd.DataFrame | None = None
 

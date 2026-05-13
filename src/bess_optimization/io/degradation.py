@@ -76,7 +76,7 @@ def load_degradation_lut_curve(
     csv_path: Path = DEFAULT_DEGRADATION_LUT_PATH,
     temperature_c: float = 25.0,
     allow_nearest_temperature: bool = False,
-) -> tuple[list[float], list[float]]:
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     curve = load_degradation_curve(
         source="lut",
         params={"p_max": 1.0, "dt": 0.25},
@@ -166,8 +166,8 @@ def _read_lut_curve(
     if abs(multiplier - 1.0) > 1e-12:
         label += f" x {multiplier:g}"
     return DegradationCurve(
-        energy_points=energy_points,
-        cost_points=cost_points,
+        energy_points=tuple(energy_points),
+        cost_points=tuple(cost_points),
         source_label=label,
         warnings=tuple(warnings),
     )
@@ -187,11 +187,15 @@ def load_degradation_curve(
     if source == "dummy":
         energy, cost = build_dummy_cost_curve(params)
         cost = [float(value) * float(multiplier) for value in cost]
-        return DegradationCurve(energy, cost, "synthetic dummy degradation curve")
+        return DegradationCurve(tuple(energy), tuple(cost), "synthetic dummy degradation curve")
 
     if source == "zero":
         energy = np.linspace(0.0, max_interval_energy, 5).tolist()
-        return DegradationCurve(energy, [0.0 for _ in energy], "zero degradation cost - comparison only")
+        return DegradationCurve(
+            tuple(energy),
+            tuple(0.0 for _ in energy),
+            "zero degradation cost - comparison only",
+        )
 
     if source not in {"lut", "pybamm"}:
         raise ValueError('Degradation source must be "lut", "pybamm", "dummy", or "zero".')

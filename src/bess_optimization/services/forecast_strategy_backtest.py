@@ -79,7 +79,7 @@ def load_degradation_curve(
     temperature_c: float = DEFAULT_LUT_TEMPERATURE_C,
     lut_csv: Path = DEFAULT_DEGRADATION_LUT_PATH,
     pybamm_lut_csv: Path = DEFAULT_PYBAMM_LUT_PATH,
-) -> tuple[list[float], list[float], str]:
+) -> tuple[tuple[float, ...], tuple[float, ...], str]:
     """Load the same degradation-curve inputs expected by the optimizer."""
 
     source = str(source).strip().lower()
@@ -194,8 +194,8 @@ def forecast_series_for_day(
 def optimize_dispatch_on_prices(
     prices: pd.Series,
     test_params: dict,
-    energy_points: list[float],
-    cost_points: list[float],
+    energy_points: Sequence[float],
+    cost_points: Sequence[float],
     solver_msg: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """Run the existing MILP against the supplied price signal."""

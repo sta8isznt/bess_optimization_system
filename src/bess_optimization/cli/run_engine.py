@@ -11,15 +11,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from bess_optimization.models import OptimizationRequest, OptimizationResult
-from bess_optimization.optimization.config import params as BASE_PARAMS
+from bess_optimization.models import BatteryConfig, OptimizationRequest, OptimizationResult
 from bess_optimization.paths import (
     ANNUAL_OUTPUT_DIR,
     DAILY_OUTPUT_DIR,
     DEFAULT_PRICE_SIGNALS_PATH,
     DEFAULT_PYBAMM_LUT_PATH,
 )
-from bess_optimization.services.optimization import run_annual_optimization, run_daily_optimization
+from bess_optimization.services.optimization import run_optimization
 
 
 # =============================================================================
@@ -35,13 +34,6 @@ PRICE_SIGNALS_CSV = DEFAULT_PRICE_SIGNALS_PATH
 DEGRADATION_LUT_CSV = DEFAULT_PYBAMM_LUT_PATH
 SOLVER_MSG = False
 INSTALLED_CAPACITY_MW = 50.0
-
-
-def build_params() -> dict:
-    params = dict(BASE_PARAMS)
-    params["dt"] = params.get("dt", params.get("DT", 0.25))
-    params["terminal_soc_mode"] = "equal_initial"
-    return params
 
 
 def _configure_matplotlib_cache() -> None:
@@ -179,21 +171,21 @@ def main() -> None:
         degradation_source=DEGRADATION_SOURCE,
         degradation_lut_file=DEGRADATION_LUT_CSV,
         temperature_c=LUT_TEMPERATURE_C,
-        params_override=build_params(),
+        battery=BatteryConfig(),
         scale_capacity_mw=INSTALLED_CAPACITY_MW,
         solver_msg=SOLVER_MSG,
     )
     mode = RUN_MODE.strip().lower()
+    if mode not in {"daily", "annual"}:
+        raise ValueError('RUN_MODE must be "daily" or "annual".')
+
+    result = run_optimization(request)
     if mode == "daily":
-        result = run_daily_optimization(request)
         paths = write_daily_outputs(result)
         label = f"Date: {pd.Timestamp(TARGET_DATE).date()}"
-    elif mode == "annual":
-        result = run_annual_optimization(request)
+    else:
         paths = write_annual_outputs(result)
         label = f"Year: {YEAR}"
-    else:
-        raise ValueError('RUN_MODE must be "daily" or "annual".')
 
     summary = result.summary_dict
     print(f"{mode.title()} optimization completed.")

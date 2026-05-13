@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -23,8 +23,7 @@ from bess_optimization.io.prices import (
     load_price_signal_day as shared_load_price_signal_day,
     load_price_signal_year as shared_load_price_signal_year,
 )
-from bess_optimization.models import OptimizationRequest as PublicOptimizationRequest
-from bess_optimization.models import OptimizationResult
+from bess_optimization.models import BatteryConfig, OptimizationRequest, OptimizationResult, OptimizationRunMode
 from bess_optimization.optimization.backtest_utils import (
     build_schedule,
     safe_divide,
@@ -32,7 +31,6 @@ from bess_optimization.optimization.backtest_utils import (
     validate_schedule,
 )
 from bess_optimization.optimization.benchmarking import BENCHMARK_LABELS, run_benchmark_model
-from bess_optimization.optimization.config import params as BASE_PARAMS
 from bess_optimization.optimization.engine import bess_order
 from bess_optimization.paths import (
     CLEANED_DATA_DIR,
@@ -106,15 +104,15 @@ def load_price_signal_year(csv_path: Path, year: int, dt: float) -> pd.Series:
         raise DashboardOptimizerError(str(exc)) from exc
 
 
-def validate_parameters(params: dict) -> list[str]:
+def validate_battery_config(battery: BatteryConfig) -> list[str]:
     errors = []
-    p_max = float(params.get("p_max", 0.0))
-    e_max = float(params.get("e_max", 0.0))
-    eta_ch = float(params.get("eta_ch", 0.0))
-    eta_dis = float(params.get("eta_dis", 0.0))
-    soc_min = float(params.get("soc_min", 0.0))
-    soc_max = float(params.get("soc_max", 0.0))
-    soc_init = float(params.get("soc_init", 0.0))
+    p_max = float(battery.p_max)
+    e_max = float(battery.e_max)
+    eta_ch = float(battery.eta_ch)
+    eta_dis = float(battery.eta_dis)
+    soc_min = float(battery.soc_min)
+    soc_max = float(battery.soc_max)
+    soc_init = float(battery.soc_init)
 
     if p_max <= 0:
         errors.append("Battery power must be positive.")
@@ -128,20 +126,16 @@ def validate_parameters(params: dict) -> list[str]:
         errors.append("SoC minimum must be lower than SoC maximum, both inside 0-100%.")
     if not soc_min < soc_init < soc_max:
         errors.append("Initial SoC must be strictly between the minimum and maximum SoC.")
-    if str(params.get("terminal_soc_mode", "equal_initial")).lower() not in {"equal_initial", "free"}:
+    if str(battery.terminal_soc_mode).lower() not in {"equal_initial", "free"}:
         errors.append('Terminal SoC mode must be "equal_initial" or "free".')
     return errors
 
 
-def build_params(params_override: dict | None = None, terminal_soc_mode: str = "equal_initial") -> dict:
-    params = dict(BASE_PARAMS)
-    params.update(params_override or {})
-    params["dt"] = float(params.get("dt", params.get("DT", 0.25)))
-    params["terminal_soc_mode"] = terminal_soc_mode
-    errors = validate_parameters(params)
+def build_params(battery: BatteryConfig) -> dict:
+    errors = validate_battery_config(battery)
     if errors:
         raise DashboardOptimizerError(" ".join(errors))
-    return params
+    return battery.as_dict()
 
 
 def load_degradation_curve(
@@ -150,7 +144,7 @@ def load_degradation_curve(
     lut_file: Path | None,
     temperature_c: float,
     multiplier: float = 1.0,
-) -> tuple[list[float], list[float], str, list[str]]:
+) -> tuple[tuple[float, ...], tuple[float, ...], str, list[str]]:
     try:
         curve = load_shared_degradation_curve(
             source=source,
@@ -446,8 +440,8 @@ def _run_annual_benchmark_comparison(
 def _optimize_price_series(
     prices: pd.Series,
     params: dict,
-    energy_points: list[float],
-    cost_points: list[float],
+    energy_points: Sequence[float],
+    cost_points: Sequence[float],
     degradation_label: str,
     price_file: Path,
     lut_file: Path | None,
@@ -508,42 +502,38 @@ def _optimize_price_series(
     }
 
 
-def run_daily_optimization(
-    target_date=None,
-    price_file=None,
-    degradation_lut_file=None,
-    params_override=None,
-    degradation_source="pybamm",
-    scale_capacity_mw=None,
-    temperature_c=25.0,
-    terminal_soc_mode="equal_initial",
-    degradation_cost_multiplier=1.0,
-    solver_msg=False,
-) -> OptimizationResult:
-    if isinstance(target_date, PublicOptimizationRequest):
-        request = target_date
-        target_date = request.target_date
-        price_file = request.price_file
-        degradation_lut_file = request.degradation_lut_file
-        params_override = request.params_override
-        degradation_source = request.degradation_source
-        scale_capacity_mw = request.scale_capacity_mw
-        temperature_c = request.temperature_c
-        terminal_soc_mode = request.terminal_soc_mode
-        degradation_cost_multiplier = request.degradation_cost_multiplier
-        solver_msg = request.solver_msg
-
-    price_file = Path(price_file or DEFAULT_PRICE_SIGNALS_PATH)
-    params_override = params_override or {}
-    params = build_params(params_override, terminal_soc_mode=terminal_soc_mode)
+def _optimization_inputs(request: OptimizationRequest):
+    price_file = Path(request.price_file or DEFAULT_PRICE_SIGNALS_PATH)
+    params = build_params(request.battery)
     energy_points, cost_points, degradation_label, warnings = load_degradation_curve(
-        degradation_source,
+        request.degradation_source,
         params,
-        degradation_lut_file,
-        temperature_c,
-        multiplier=degradation_cost_multiplier,
+        request.degradation_lut_file,
+        request.temperature_c,
+        multiplier=request.degradation_cost_multiplier,
     )
-    prices = load_price_signal_day(price_file, str(target_date), params["dt"])
+    lut_file = Path(request.degradation_lut_file) if request.degradation_lut_file else None
+    return price_file, params, energy_points, cost_points, degradation_label, warnings, lut_file
+
+
+def run_optimization(request: OptimizationRequest) -> OptimizationResult:
+    """Run a daily or annual optimization from one request object."""
+
+    try:
+        mode = OptimizationRunMode(str(request.run_mode).strip().lower())
+    except ValueError as exc:
+        raise DashboardOptimizerError('run_mode must be "daily" or "annual".') from exc
+
+    if mode == OptimizationRunMode.DAILY:
+        return _run_daily_optimization(request)
+    return _run_annual_optimization(request)
+
+
+def _run_daily_optimization(request: OptimizationRequest) -> OptimizationResult:
+    price_file, params, energy_points, cost_points, degradation_label, warnings, lut_file = (
+        _optimization_inputs(request)
+    )
+    prices = load_price_signal_day(price_file, str(request.target_date), params["dt"])
     result = _optimize_price_series(
         prices=prices,
         params=params,
@@ -551,9 +541,9 @@ def run_daily_optimization(
         cost_points=cost_points,
         degradation_label=degradation_label,
         price_file=price_file,
-        lut_file=Path(degradation_lut_file) if degradation_lut_file else None,
-        scale_capacity_mw=scale_capacity_mw,
-        solver_msg=solver_msg,
+        lut_file=lut_file,
+        scale_capacity_mw=request.scale_capacity_mw,
+        solver_msg=request.solver_msg,
         warnings=warnings,
     )
     result["summary_dict"]["price_start"] = str(prices.index.min())
@@ -562,8 +552,8 @@ def run_daily_optimization(
         prices=prices,
         params=params,
         base_summary=result["summary_dict"],
-        scale_capacity_mw=scale_capacity_mw,
-        solver_msg=solver_msg,
+        scale_capacity_mw=request.scale_capacity_mw,
+        solver_msg=request.solver_msg,
     )
     result["benchmark_comparison_df"] = comparison
     result["warnings"].extend(benchmark_warnings)
@@ -573,47 +563,16 @@ def run_daily_optimization(
         summary_dict=result["summary_dict"],
         params_used=result["params_used"],
         files_used=result["files_used"],
-        warnings=result["warnings"],
+        warnings=tuple(result["warnings"]),
         benchmark_comparison_df=result.get("benchmark_comparison_df"),
     )
 
 
-def run_annual_optimization(
-    year=None,
-    price_file=None,
-    degradation_lut_file=None,
-    params_override=None,
-    degradation_source="pybamm",
-    scale_capacity_mw=None,
-    temperature_c=25.0,
-    terminal_soc_mode="equal_initial",
-    degradation_cost_multiplier=1.0,
-    solver_msg=False,
-) -> OptimizationResult:
-    if isinstance(year, PublicOptimizationRequest):
-        request = year
-        year = request.year
-        price_file = request.price_file
-        degradation_lut_file = request.degradation_lut_file
-        params_override = request.params_override
-        degradation_source = request.degradation_source
-        scale_capacity_mw = request.scale_capacity_mw
-        temperature_c = request.temperature_c
-        terminal_soc_mode = request.terminal_soc_mode
-        degradation_cost_multiplier = request.degradation_cost_multiplier
-        solver_msg = request.solver_msg
-
-    price_file = Path(price_file or DEFAULT_PRICE_SIGNALS_PATH)
-    params_override = params_override or {}
-    params = build_params(params_override, terminal_soc_mode=terminal_soc_mode)
-    energy_points, cost_points, degradation_label, warnings = load_degradation_curve(
-        degradation_source,
-        params,
-        degradation_lut_file,
-        temperature_c,
-        multiplier=degradation_cost_multiplier,
+def _run_annual_optimization(request: OptimizationRequest) -> OptimizationResult:
+    price_file, params, energy_points, cost_points, degradation_label, warnings, lut_file = (
+        _optimization_inputs(request)
     )
-    prices_year = load_price_signal_year(price_file, int(year), params["dt"])
+    prices_year = load_price_signal_year(price_file, int(request.year), params["dt"])
 
     schedules = []
     daily_summaries = []
@@ -626,10 +585,10 @@ def run_annual_optimization(
             energy_points=energy_points,
             cost_points=cost_points,
             degradation_label=degradation_label,
-                price_file=price_file,
-            lut_file=Path(degradation_lut_file) if degradation_lut_file else None,
-            scale_capacity_mw=scale_capacity_mw,
-            solver_msg=solver_msg,
+            price_file=price_file,
+            lut_file=lut_file,
+            scale_capacity_mw=request.scale_capacity_mw,
+            solver_msg=request.solver_msg,
         )
         schedules.append(result["dispatch_df"])
         daily_summaries.append(result["summary_dict"])
@@ -647,7 +606,7 @@ def run_annual_optimization(
 
     summary = {
         "solver_status": status,
-        "year": int(year),
+        "year": int(request.year),
         "days": int(daily_stats.shape[0]),
         "intervals": int(annual_schedule.shape[0]),
         "optimal_days": int((daily_stats["solver_status"] == "Optimal").sum()),
@@ -675,15 +634,20 @@ def run_annual_optimization(
         "degradation_cost_source": degradation_label,
         "validation_passed": not run_warnings,
     }
-    annual_schedule, summary = _apply_scale(annual_schedule, summary, params, scale_capacity_mw)
+    annual_schedule, summary = _apply_scale(
+        annual_schedule,
+        summary,
+        params,
+        request.scale_capacity_mw,
+    )
     comparison, benchmark_warnings = _run_annual_benchmark_comparison(
         prices_year=prices_year,
         grouped_days=grouped_days,
         params=params,
         base_summary=summary,
-        scale_capacity_mw=scale_capacity_mw,
-        solver_msg=solver_msg,
-        year=int(year),
+        scale_capacity_mw=request.scale_capacity_mw,
+        solver_msg=request.solver_msg,
+        year=int(request.year),
     )
     run_warnings.extend(benchmark_warnings)
 
@@ -696,8 +660,8 @@ def run_annual_optimization(
         params_used=dict(params),
         files_used={
             "price_file": str(price_file),
-            "degradation_lut_file": str(degradation_lut_file) if degradation_lut_file else None,
+            "degradation_lut_file": str(request.degradation_lut_file) if request.degradation_lut_file else None,
             "degradation_source": degradation_label,
         },
-        warnings=run_warnings,
+        warnings=tuple(run_warnings),
     )

@@ -13,6 +13,7 @@ from .models import (
     ForecastResult,
     OptimizationRequest,
     OptimizationResult,
+    OptimizationRunMode,
 )
 
 if TYPE_CHECKING:
@@ -33,16 +34,10 @@ def run_forecast(request: ForecastRequest) -> ForecastResult:
     return _run_forecast(request)
 
 
-def run_daily_optimization(request: OptimizationRequest) -> OptimizationResult:
-    from .services.optimization import run_daily_optimization as _run_daily_optimization
+def run_optimization(request: OptimizationRequest) -> OptimizationResult:
+    from .services.optimization import run_optimization as _run_optimization
 
-    return _run_daily_optimization(request)
-
-
-def run_annual_optimization(request: OptimizationRequest) -> OptimizationResult:
-    from .services.optimization import run_annual_optimization as _run_annual_optimization
-
-    return _run_annual_optimization(request)
+    return _run_optimization(request)
 
 
 def run_forecast_strategy_backtest(request: ForecastBacktestRequest) -> ForecastBacktestResult:
@@ -80,10 +75,10 @@ __all__ = [
     "ForecastResult",
     "OptimizationRequest",
     "OptimizationResult",
+    "OptimizationRunMode",
     "PyBaMMLutConfig",
     "build_pybamm_lut",
-    "run_annual_optimization",
-    "run_daily_optimization",
     "run_forecast",
     "run_forecast_strategy_backtest",
+    "run_optimization",
 ]
